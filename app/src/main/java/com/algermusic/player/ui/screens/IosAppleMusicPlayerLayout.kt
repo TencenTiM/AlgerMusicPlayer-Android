@@ -111,6 +111,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -197,7 +198,8 @@ internal fun IosAppleMusicPlayerLayout(
     onOpenComments: (SongItem) -> Unit,
     onOpenSleepTimer: () -> Unit,
     onOpenSongInfo: () -> Unit,
-    onOpenPlayerStyleGallery: () -> Unit
+    onOpenPlayerStyleGallery: () -> Unit,
+    onToggleTranslation: () -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
     val menuHost = LocalLiquidMenuHost.current
@@ -448,6 +450,8 @@ internal fun IosAppleMusicPlayerLayout(
                                     progressFlow = progressFlow,
                                     iosWhite = iosWhite,
                                     iosMuted = iosMuted,
+                                    lyricHighlightColor = lyricHighlightColor,
+                                    onToggleTranslation = onToggleTranslation,
                                     onSeekTo = onSeekTo
                                 )
                             }
@@ -1188,6 +1192,8 @@ private fun IosInPlaceLyricContent(
     progressFlow: StateFlow<PlaybackProgress>,
     iosWhite: Color,
     iosMuted: Color,
+    lyricHighlightColor: Color,
+    onToggleTranslation: () -> Unit,
     onSeekTo: (Long) -> Unit
 ) {
     val lines = playerState.parsedLyric.lines
@@ -1217,55 +1223,87 @@ private fun IosInPlaceLyricContent(
             )
         }
     } else {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            itemsIndexed(lines) { idx, line ->
-                val isCurrent = idx == activeIdx
-                Column(
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                itemsIndexed(lines) { idx, line ->
+                    val isCurrent = idx == activeIdx
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onSeekTo(line.startTimeMs.toLong()) }
+                            .padding(vertical = 2.dp),
+                        horizontalAlignment = Alignment.Start
+                    ) {
+                        if (isCurrent) {
+                            LiquidSweepLyricText(
+                                lines = lines,
+                                lineIndex = idx,
+                                text = line.text,
+                                progressFlow = progressFlow,
+                                isPlaying = playerState.isPlaying,
+                                playbackRate = playerState.playbackRate,
+                                lyricOffsetMs = playerState.lyricOffsetMs,
+                                sungColor = lyricHighlightColor,
+                                unsungColor = iosWhite.copy(alpha = 0.34f),
+                                fontSize = 24.sp,
+                                lineHeight = 33.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 4,
+                                textAlign = TextAlign.Start
+                            )
+                        } else {
+                            Text(
+                                text = line.text,
+                                color = iosWhite.copy(alpha = if (idx < activeIdx) 0.34f else 0.52f),
+                                fontSize = 20.sp,
+                                lineHeight = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Start,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        if (playerState.showTranslation && line.translationText.isNotBlank()) {
+                            Text(
+                                text = line.translationText,
+                                color = iosWhite.copy(alpha = if (isCurrent) 0.72f else 0.36f),
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                textAlign = TextAlign.Start,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (playerState.parsedLyric.hasTranslation) {
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { onSeekTo(line.startTimeMs.toLong()) }
-                        .padding(vertical = 2.dp),
-                    horizontalAlignment = Alignment.Start
+                        .align(Alignment.BottomEnd)
+                        .padding(bottom = 8.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (playerState.showTranslation) Color.White.copy(alpha = 0.24f)
+                            else Color.White.copy(alpha = 0.12f)
+                        )
+                        .clickable(onClick = onToggleTranslation)
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    if (isCurrent) {
-                        LiquidSweepLyricText(
-                            lines = lines,
-                            lineIndex = idx,
-                            text = line.text,
-                            progressFlow = progressFlow,
-                            isPlaying = playerState.isPlaying,
-                            playbackRate = playerState.playbackRate,
-                            lyricOffsetMs = playerState.lyricOffsetMs,
-                            sungColor = iosWhite,
-                            unsungColor = iosWhite.copy(alpha = 0.48f),
-                            fontSize = 24.sp,
-                            lineHeight = 33.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 4
-                        )
-                    } else {
-                        Text(
-                            text = line.text,
-                            color = iosWhite.copy(alpha = if (idx < activeIdx) 0.34f else 0.52f),
-                            fontSize = 20.sp,
-                            lineHeight = 28.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    if (playerState.showTranslation && line.translationText.isNotBlank()) {
-                        Text(
-                            text = line.translationText,
-                            color = iosWhite.copy(alpha = if (isCurrent) 0.78f else 0.38f),
-                            fontSize = 14.sp,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
+                    Text(
+                        text = "译",
+                        color = if (playerState.showTranslation) iosWhite else iosWhite.copy(alpha = 0.62f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }

@@ -281,6 +281,58 @@ class LyricService(
             return map
         }
 
+        private data class TopLevelSpan(
+            val startIndex: Int,
+            val endIndex: Int,
+            val attrText: String,
+            val innerHtml: String
+        )
+
+        /**
+         * 平衡提取 `<p>` 内的顶层 `<span>`（正确跳过嵌套在 `x-bg` / `x-translation` 里的子 span，避免截断或串行）。
+         */
+        private fun extractTopLevelSpans(inner: String): List<TopLevelSpan> {
+            val spans = mutableListOf<TopLevelSpan>()
+            val tokenRegex = Regex("""<(/?)span\b([^>]*)>""", RegexOption.IGNORE_CASE)
+            var depth = 0
+            var openStart = -1
+            var openContentStart = -1
+            var openAttr = ""
+
+            for (m in tokenRegex.findAll(inner)) {
+                val isClosing = m.groupValues[1] == "/"
+                val isSelfClosing = !isClosing && m.value.trimEnd().endsWith("/>")
+                if (!isClosing) {
+                    if (depth == 0) {
+                        if (isSelfClosing) {
+                            spans.add(TopLevelSpan(m.range.first, m.range.last + 1, m.groupValues[2], ""))
+                        } else {
+                            openStart = m.range.first
+                            openContentStart = m.range.last + 1
+                            openAttr = m.groupValues[2]
+                            depth = 1
+                        }
+                    } else if (!isSelfClosing) {
+                        depth++
+                    }
+                } else if (depth > 0) {
+                    depth--
+                    if (depth == 0 && openStart >= 0) {
+                        spans.add(
+                            TopLevelSpan(
+                                startIndex = openStart,
+                                endIndex = m.range.last + 1,
+                                attrText = openAttr,
+                                innerHtml = inner.substring(openContentStart, m.range.first)
+                            )
+                        )
+                        openStart = -1
+                    }
+                }
+            }
+            return spans
+        }
+
         private fun parseTtmlLines(ttmlText: String): List<LyricLine> {
             // 预提取 Apple Music iTunesMetadata 中按 itunes:key 关联的翻译/罗马音
             val headTranslations = HashMap<String, String>()
@@ -332,41 +384,44 @@ class LyricService(
                 var translation = headTranslations[pKey].orEmpty()
                 var romaji = headRomaji[pKey].orEmpty()
 
-                val spanMatches = TTML_SPAN_REGEX.findAll(inner).toList()
+                val spanMatches = extractTopLevelSpans(inner)
                 if (spanMatches.isNotEmpty()) {
                     val mainTextBuilder = StringBuilder()
                     var cursor = 0
                     for (sm in spanMatches) {
-                        val sAttrs = parseXmlAttributes(sm.groupValues[1])
+                        val sAttrs = parseXmlAttributes(sm.attrText)
                         val role = (sAttrs["ttm:role"] ?: sAttrs["role"] ?: "").lowercase()
-                        val rawContent = unescapeXml(sm.groupValues[2].replace(XML_TAG_STRIP_REGEX, ""))
+                        val lang = (sAttrs["xml:lang"] ?: sAttrs["lang"] ?: "").lowercase()
+                        val rawContent = unescapeXml(sm.innerHtml.replace(XML_TAG_STRIP_REGEX, ""))
                         val cleanContent = rawContent.trim()
+                        val isTranslationSpan = role == "x-translation" ||
+                            (sAttrs["begin"] == null && (lang.startsWith("zh") || lang.startsWith("cn")))
 
-                        when (role) {
-                            "x-translation" -> {
+                        when {
+                            isTranslationSpan -> {
                                 if (cleanContent.isNotBlank() && translation.isBlank()) {
                                     translation = cleanContent
                                 }
-                                cursor = sm.range.last + 1
+                                cursor = sm.endIndex
                                 continue
                             }
-                            "x-roman" -> {
+                            role == "x-roman" -> {
                                 if (cleanContent.isNotBlank() && romaji.isBlank()) {
                                     romaji = cleanContent
                                 }
-                                cursor = sm.range.last + 1
+                                cursor = sm.endIndex
                                 continue
                             }
-                            "x-bg" -> {
+                            role == "x-bg" -> {
                                 // 和声背景人声不混入主逐字行，避免重复错位
-                                cursor = sm.range.last + 1
+                                cursor = sm.endIndex
                                 continue
                             }
                         }
 
                         // 保留 span 之间的空格（英文歌词单词间隔）
                         val between = unescapeXml(
-                            inner.substring(cursor, sm.range.first).replace(XML_TAG_STRIP_REGEX, "")
+                            inner.substring(cursor, sm.startIndex).replace(XML_TAG_STRIP_REGEX, "")
                         )
                         if (between.contains(' ') && words.isNotEmpty()) {
                             val last = words.last()
@@ -375,7 +430,7 @@ class LyricService(
                                 mainTextBuilder.append(' ')
                             }
                         }
-                        cursor = sm.range.last + 1
+                        cursor = sm.endIndex
 
                         if (rawContent.isEmpty()) continue
                         val wStart = parseTtmlTimeMs(sAttrs["begin"])

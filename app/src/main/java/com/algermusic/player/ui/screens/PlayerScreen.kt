@@ -562,7 +562,8 @@ fun PlayerScreen(
                 onOpenComments = onOpenComments,
                 onOpenSleepTimer = onOpenSleepTimer,
                 onOpenSongInfo = { showSongInfoSheet = true },
-                onOpenPlayerStyleGallery = onOpenPlayerStyleGallery
+                onOpenPlayerStyleGallery = onOpenPlayerStyleGallery,
+                onToggleTranslation = onToggleTranslation
             )
         } else {
         val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
@@ -2439,7 +2440,8 @@ private fun LyricLineRow(
             Text(
                 text = line.translationText,
                 color = if (isCurrent) fgSecondary else fgSecondary.copy(alpha = 0.55f),
-                fontSize = 13.5.sp,
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp,
                 textAlign = TextAlign.Center
             )
         }
@@ -2463,7 +2465,8 @@ internal fun LiquidSweepLyricText(
     fontSize: TextUnit,
     lineHeight: TextUnit,
     fontWeight: FontWeight,
-    maxLines: Int = Int.MAX_VALUE
+    maxLines: Int = Int.MAX_VALUE,
+    textAlign: TextAlign = TextAlign.Center
 ) {
     val progress by progressFlow.collectAsState()
     var basePosMs by remember { mutableLongStateOf(progress.positionMs) }
@@ -2501,12 +2504,13 @@ internal fun LiquidSweepLyricText(
         color = Color.White,
         fontSize = fontSize,
         fontWeight = fontWeight,
-        textAlign = TextAlign.Center,
+        textAlign = textAlign,
         lineHeight = lineHeight,
         maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         onTextLayout = { textLayout = it },
         modifier = Modifier
+            .fillMaxWidth()
             .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
             .drawWithContent {
                 drawContent()
@@ -2553,7 +2557,7 @@ internal fun LiquidSweepLyricText(
                         }
                         else -> {
                             val edgeX = left + (filledW - accW)
-                            val fLeft = ((edgeX - featherPx - left) / lineW).coerceIn(0f, 1f)
+                            val fLeft = ((edgeX - featherPx - left) / lineW).coerceIn(0f, 0.998f)
                             val fRight = ((edgeX + featherPx - left) / lineW).coerceIn(fLeft + 0.0005f, 1f)
                             drawRect(
                                 brush = Brush.horizontalGradient(
