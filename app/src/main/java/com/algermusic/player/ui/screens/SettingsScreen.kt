@@ -291,12 +291,12 @@ fun SettingsScreen(
                 rootSize = coords.size
             }
     ) {
-        // 底层：设置页主内容（仅在弹出菜单打开时启用 layerBackdrop 采样，平时滚动零离屏开销）
+        // 底层：设置页主内容（仅在弹出菜单或更新弹窗打开时启用 layerBackdrop 采样，平时滚动零离屏开销）
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .then(
-                    if (activeMenu != null) Modifier.layerBackdrop(settingsBackdrop) else Modifier
+                    if (activeMenu != null || showUpdateSheet) Modifier.layerBackdrop(settingsBackdrop) else Modifier
                 )
                 .background(pageBg)
                 .navigationBarsPadding()
