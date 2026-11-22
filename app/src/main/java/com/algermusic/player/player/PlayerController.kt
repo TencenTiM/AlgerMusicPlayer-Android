@@ -70,7 +70,7 @@ data class PlayerUiState(
     val sourceBadge: String = "",
     val parsedLyric: ParsedLyric = ParsedLyric(),
     val lyricOffsetMs: Int = 0,
-    val showTranslation: Boolean = true,
+    val showTranslation: Boolean = false,
     val showRomaji: Boolean = false,
     val statusMessage: String? = null,
     val equalizerConfig: EqualizerConfig = EqualizerConfig(),
@@ -160,7 +160,7 @@ class PlayerController(
                 playMode = settings.playMode,
                 playbackRate = settings.playbackRate,
                 lyricOffsetMs = settings.lyricOffsetMs,
-                showTranslation = settings.showTranslation,
+                showTranslation = if (settings.showTranslationExplicitlySet) settings.showTranslation else false,
                 showRomaji = settings.showRomaji,
                 equalizerConfig = settings.equalizer,
                 activeForcePlatform = settings.preferredMusicSource?.takeIf {
@@ -1710,7 +1710,9 @@ class PlayerController(
     fun toggleTranslation() {
         val next = !_uiState.value.showTranslation
         _uiState.update { it.copy(showTranslation = next) }
-        settingsRepo.updateSettings { it.copy(showTranslation = next) }
+        settingsRepo.updateSettings {
+            it.copy(showTranslation = next, showTranslationExplicitlySet = true)
+        }
     }
 
     fun toggleRomaji() {

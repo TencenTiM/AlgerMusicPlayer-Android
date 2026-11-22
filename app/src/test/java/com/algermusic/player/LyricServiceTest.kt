@@ -119,4 +119,59 @@ class LyricServiceTest {
         assertEquals(7, parsed.lines[1].words.size)
         assertFalse(parsed.lines.any { it.text.contains("[") || it.text.contains("<") })
     }
+
+    @Test
+    fun parseLocalLyric_supportsTtmlQrcKrcSrtVttAndAssFormats() {
+        val ttml = """
+            <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+              <body><div>
+                <p begin="00:10.000" end="00:13.500">
+                  <span begin="00:10.000" end="00:11.000">Hello</span>
+                  <span begin="00:11.000" end="00:12.500">World</span>
+                  <span ttm:role="x-translation">你好世界</span>
+                  <span ttm:role="x-roman">ni hao shi jie</span>
+                </p>
+              </div></body>
+            </tt>
+        """.trimIndent()
+        val parsedTtml = LyricService.parseLocalLyric("6001", ttml)!!
+        assertTrue(parsedTtml.hasWordByWord)
+        assertTrue(parsedTtml.hasTranslation)
+        assertTrue(parsedTtml.hasRomaji)
+        assertEquals("Hello World", parsedTtml.lines[0].text)
+        assertEquals("你好世界", parsedTtml.lines[0].translationText)
+        assertEquals("ni hao shi jie", parsedTtml.lines[0].romajiText)
+        assertEquals(2, parsedTtml.lines[0].words.size)
+
+        val qrc = "[12000,3000]星(12000,500)辰(12500,800)大海(13300,1700)"
+        val parsedQrc = LyricService.parseLocalLyric("6002", qrc)!!
+        assertTrue(parsedQrc.hasWordByWord)
+        assertEquals("星辰大海", parsedQrc.lines[0].text)
+        assertEquals(3, parsedQrc.lines[0].words.size)
+
+        val krc = "[15000,2500]<0,500,0>十<500,800,0>年"
+        val parsedKrc = LyricService.parseLocalLyric("6003", krc)!!
+        assertTrue(parsedKrc.hasWordByWord)
+        assertEquals("十年", parsedKrc.lines[0].text)
+        assertEquals(15500.0, parsedKrc.lines[0].words[1].startTimeMs, 1.0)
+
+        val srt = """
+            1
+            00:00:05,200 --> 00:00:08,800
+            First subtitle line
+            第一句字幕翻译
+        """.trimIndent()
+        val parsedSrt = LyricService.parseLocalLyric("6004", srt)!!
+        assertTrue(parsedSrt.hasTranslation)
+        assertEquals(5200.0, parsedSrt.lines[0].startTimeMs, 1.0)
+        assertEquals("First subtitle line", parsedSrt.lines[0].text)
+        assertEquals("第一句字幕翻译", parsedSrt.lines[0].translationText)
+
+        val ass = "Dialogue: 0,0:00:12.50,0:00:16.00,Default,,0,0,0,,{\\k50}梦醒时分\\NWhen I wake up"
+        val parsedAss = LyricService.parseLocalLyric("6005", ass)!!
+        assertTrue(parsedAss.hasTranslation)
+        assertEquals(12500.0, parsedAss.lines[0].startTimeMs, 1.0)
+        assertEquals("梦醒时分", parsedAss.lines[0].text)
+        assertEquals("When I wake up", parsedAss.lines[0].translationText)
+    }
 }
