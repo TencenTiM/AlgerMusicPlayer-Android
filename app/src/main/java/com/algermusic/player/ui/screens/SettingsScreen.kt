@@ -1,12 +1,8 @@
 package com.algermusic.player.ui.screens
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -863,21 +859,11 @@ fun SettingsScreen(
                             valueText = "QQ群 1137351952",
                             onClick = {
                                 runCatching {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                    cm?.setPrimaryClip(ClipData.newPlainText("QQ群号", "1137351952"))
-                                }
-                                val opened = runCatching {
                                     context.startActivity(
                                         Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/ScReTV5fA4"))
                                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     )
-                                    true
-                                }.getOrDefault(false)
-                                Toast.makeText(
-                                    context,
-                                    if (opened) "已复制群号 1137351952 并跳转加群" else "已复制 QQ 群号：1137351952",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                }
                             }
                         )
                     }
