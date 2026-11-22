@@ -859,7 +859,7 @@ fun SettingsScreen(
                         IosDetailNavRow(
                             icon = Icons.Filled.Groups,
                             iconBg = IosTeal,
-                            title = "Alger Music Player 爆改群",
+                            title = "作者群",
                             valueText = "QQ群 1137351952",
                             onClick = {
                                 runCatching {
