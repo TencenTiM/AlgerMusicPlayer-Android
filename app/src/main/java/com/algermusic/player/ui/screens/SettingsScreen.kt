@@ -129,6 +129,7 @@ import com.algermusic.player.data.unblock.UnblockMusicService
 import com.algermusic.player.data.update.AppUpdateService
 import com.algermusic.player.model.AppSettings
 import com.algermusic.player.model.InfiniteContinueMode
+import com.algermusic.player.model.LyricLayoutMode
 import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.NasCacheWhilePlayingMode
 import com.algermusic.player.model.NasNetworkPlayMode
@@ -185,6 +186,9 @@ fun SettingsScreen(
     onNasNetworkPlayModeChange: (NasNetworkPlayMode) -> Unit = {},
     onAutoPlayOnLaunchChange: (Boolean) -> Unit = {},
     onInfiniteContinueModeChange: (InfiniteContinueMode) -> Unit = {},
+    onLyricLayoutModeChange: (LyricLayoutMode) -> Unit = {},
+    onShowTranslationChange: (Boolean) -> Unit = {},
+    onShowRomajiChange: (Boolean) -> Unit = {},
     onEnableStatusBarLyricChange: (Boolean) -> Unit = {},
     onEnableAodLyricChange: (Boolean) -> Unit = {},
     onLyricWidgetFontSizeChange: (Int) -> Unit = {},
@@ -428,6 +432,61 @@ fun SettingsScreen(
                                     )
                                 )
                             }
+                        )
+                    }
+                }
+
+                // 1.4 歌词设置（布局、翻译、罗马音）
+                item(key = "sec_lyric_settings") {
+                    IosSettingsGroup(
+                        headerIcon = Icons.Outlined.Lyrics,
+                        headerTitle = "歌词设置",
+                        footerText = "支持 TTML / YRC / QRC / KRC / LRC / SRT / ASS 等全格式本地歌词优先匹配。「正常」保持当前默认排版，「紧凑」同屏显示更多行，「居中」强制居中对齐。",
+                        cardBg = cardBg,
+                        isDark = isDark
+                    ) {
+                        IosMenuSelectorRow(
+                            icon = Icons.Filled.FormatSize,
+                            iconBg = IosBlue,
+                            iconCircle = true,
+                            title = "歌词布局",
+                            valueText = settings.lyricLayoutMode.label,
+                            onTriggerClick = { rect ->
+                                openPopover(
+                                    ActiveIosPopoverMenu(
+                                        id = "lyric_layout_mode",
+                                        anchorRectInRoot = rect,
+                                        options = LyricLayoutMode.entries.map {
+                                            IosMenuOption(it.name, it.label)
+                                        },
+                                        selectedKey = settings.lyricLayoutMode.name,
+                                        onSelect = { key ->
+                                            menuSelectedKeyOverride = key
+                                            dismissPopover {
+                                                onLyricLayoutModeChange(LyricLayoutMode.valueOf(key))
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosLiquidSwitchRow(
+                            icon = Icons.Filled.Description,
+                            iconBg = EmeraldAccent,
+                            iconCircle = true,
+                            title = "显示歌词翻译",
+                            checked = settings.showTranslation,
+                            onCheckedChange = onShowTranslationChange
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosLiquidSwitchRow(
+                            icon = Icons.Filled.Lyrics,
+                            iconBg = IosTeal,
+                            iconCircle = true,
+                            title = "显示罗马音",
+                            checked = settings.showRomaji,
+                            onCheckedChange = onShowRomajiChange
                         )
                     }
                 }

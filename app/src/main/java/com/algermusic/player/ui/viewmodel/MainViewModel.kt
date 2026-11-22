@@ -1441,6 +1441,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         container.settingsRepository.updateSettings { it.copy(infiniteContinueMode = mode) }
     fun setEnableStatusBarLyric(enabled: Boolean) =
         container.settingsRepository.updateSettings { it.copy(enableStatusBarLyric = enabled) }
+    fun setLyricLayoutMode(mode: com.algermusic.player.model.LyricLayoutMode) =
+        container.settingsRepository.updateSettings { it.copy(lyricLayoutMode = mode) }
+    fun setShowTranslation(enabled: Boolean) =
+        container.playerController.setShowTranslation(enabled)
+    fun setShowRomaji(enabled: Boolean) =
+        container.playerController.setShowRomaji(enabled)
     fun setEnableAodLyric(enabled: Boolean) =
         container.settingsRepository.updateSettings { it.copy(enableAodLyric = enabled) }
     fun setLyricWidgetFontSizeSp(sizeSp: Int) {

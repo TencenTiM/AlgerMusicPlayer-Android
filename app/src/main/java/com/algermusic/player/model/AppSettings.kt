@@ -19,6 +19,13 @@ enum class PlayerStyleCategory(val label: String) {
 }
 
 @Serializable
+enum class LyricLayoutMode(val label: String) {
+    COMPACT("紧凑"),
+    NORMAL("正常"),
+    CENTERED("居中")
+}
+
+@Serializable
 enum class PlayerStyle(
     val label: String,
     val subtitle: String,
@@ -221,6 +228,7 @@ data class AppSettings(
     val showTranslation: Boolean = false,
     val showTranslationExplicitlySet: Boolean = false,
     val showRomaji: Boolean = false,
+    val lyricLayoutMode: LyricLayoutMode = LyricLayoutMode.NORMAL,
     val sleepTimerFinishCurrentSong: Boolean = false,
     val equalizer: EqualizerConfig = EqualizerConfig(),
     val lastPlayedSong: SongItem? = null,

@@ -1708,17 +1708,23 @@ class PlayerController(
     }
 
     fun toggleTranslation() {
-        val next = !_uiState.value.showTranslation
-        _uiState.update { it.copy(showTranslation = next) }
+        setShowTranslation(!_uiState.value.showTranslation)
+    }
+
+    fun setShowTranslation(enabled: Boolean) {
+        _uiState.update { it.copy(showTranslation = enabled) }
         settingsRepo.updateSettings {
-            it.copy(showTranslation = next, showTranslationExplicitlySet = true)
+            it.copy(showTranslation = enabled, showTranslationExplicitlySet = true)
         }
     }
 
     fun toggleRomaji() {
-        val next = !_uiState.value.showRomaji
-        _uiState.update { it.copy(showRomaji = next) }
-        settingsRepo.updateSettings { it.copy(showRomaji = next) }
+        setShowRomaji(!_uiState.value.showRomaji)
+    }
+
+    fun setShowRomaji(enabled: Boolean) {
+        _uiState.update { it.copy(showRomaji = enabled) }
+        settingsRepo.updateSettings { it.copy(showRomaji = enabled) }
     }
 
     fun setSleepTimerFinishCurrentSong(enabled: Boolean) {

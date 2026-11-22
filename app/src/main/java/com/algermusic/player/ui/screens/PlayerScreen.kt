@@ -233,6 +233,7 @@ fun PlayerScreen(
     onAdjustLyricOffset: (Int) -> Unit,
     playerStyle: PlayerStyle = PlayerStyle.CLASSIC_CARD,
     playerStyleConfig: PlayerStyleConfig = PlayerStyleConfig(),
+    lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode = com.algermusic.player.model.LyricLayoutMode.NORMAL,
     onOpenPlayerStyleGallery: () -> Unit = {},
     hideHeroCover: Boolean = false,
     onHeroCoverBoundsChanged: (Rect) -> Unit = {},
@@ -563,7 +564,8 @@ fun PlayerScreen(
                 onOpenSleepTimer = onOpenSleepTimer,
                 onOpenSongInfo = { showSongInfoSheet = true },
                 onOpenPlayerStyleGallery = onOpenPlayerStyleGallery,
-                onToggleTranslation = onToggleTranslation
+                onToggleTranslation = onToggleTranslation,
+                lyricLayoutMode = lyricLayoutMode
             )
         } else {
         val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
@@ -675,6 +677,7 @@ fun PlayerScreen(
                         LyricViewSection(
                             playerState = playerState,
                             progressFlow = progressFlow,
+                            lyricLayoutMode = lyricLayoutMode,
                             fgPrimary = fgPrimary,
                             fgSecondary = fgSecondary,
                             activeAccent = activeAccent,
@@ -2052,6 +2055,7 @@ private fun CoverActiveLyricPreview(
 private fun LyricViewSection(
     playerState: PlayerUiState,
     progressFlow: StateFlow<PlaybackProgress>,
+    lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode,
     fgPrimary: Color,
     fgSecondary: Color,
     activeAccent: Color,
@@ -2112,8 +2116,16 @@ private fun LyricViewSection(
                             blendMode = BlendMode.DstIn
                         )
                     },
-                contentPadding = PaddingValues(vertical = 84.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                contentPadding = PaddingValues(
+                    vertical = if (lyricLayoutMode == com.algermusic.player.model.LyricLayoutMode.COMPACT) 48.dp else 84.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(
+                    when (lyricLayoutMode) {
+                        com.algermusic.player.model.LyricLayoutMode.COMPACT -> 10.dp
+                        com.algermusic.player.model.LyricLayoutMode.NORMAL -> 20.dp
+                        com.algermusic.player.model.LyricLayoutMode.CENTERED -> 22.dp
+                    }
+                )
             ) {
                 itemsIndexed(lines, key = { idx, l -> "${idx}_${l.startTimeMs}" }) { idx, line ->
                     val isCurrent = idx == activeIdx
@@ -2128,6 +2140,7 @@ private fun LyricViewSection(
                         lyricOffsetMs = playerState.lyricOffsetMs,
                         showTranslation = playerState.showTranslation,
                         showRomaji = playerState.showRomaji,
+                        lyricLayoutMode = lyricLayoutMode,
                         fgPrimary = fgPrimary,
                         fgSecondary = fgSecondary,
                         lyricHighlightColor = lyricHighlightColor,
@@ -2377,6 +2390,7 @@ private fun LyricLineRow(
     lyricOffsetMs: Int,
     showTranslation: Boolean,
     showRomaji: Boolean,
+    lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode = com.algermusic.player.model.LyricLayoutMode.NORMAL,
     fgPrimary: Color,
     fgSecondary: Color,
     lyricHighlightColor: Color,
@@ -2387,6 +2401,12 @@ private fun LyricLineRow(
         animationSpec = tween(260),
         label = "lyricScale"
     )
+    val isCompact = lyricLayoutMode == com.algermusic.player.model.LyricLayoutMode.COMPACT
+    val activeFontSize = if (isCompact) 19.sp else 22.sp
+    val activeLineHeight = if (isCompact) 26.sp else 31.sp
+    val inactiveFontSize = if (isCompact) 15.sp else 17.sp
+    val inactiveLineHeight = if (isCompact) 21.sp else 25.sp
+    val transFontSize = if (isCompact) 11.5.sp else 12.5.sp
 
     Column(
         modifier = Modifier
@@ -2397,7 +2417,7 @@ private fun LyricLineRow(
             }
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 8.dp, vertical = if (isCompact) 2.dp else 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         if (isCurrent) {
@@ -2411,37 +2431,37 @@ private fun LyricLineRow(
                 lyricOffsetMs = lyricOffsetMs,
                 sungColor = lyricHighlightColor,
                 unsungColor = fgPrimary.copy(alpha = 0.42f),
-                fontSize = 22.sp,
-                lineHeight = 31.sp,
+                fontSize = activeFontSize,
+                lineHeight = activeLineHeight,
                 fontWeight = FontWeight.Bold
             )
         } else {
             Text(
                 text = line.text,
                 color = fgPrimary.copy(alpha = 0.36f),
-                fontSize = 17.sp,
+                fontSize = inactiveFontSize,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
-                lineHeight = 25.sp
+                lineHeight = inactiveLineHeight
             )
         }
 
         if (showRomaji && line.romajiText.isNotBlank()) {
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(if (isCompact) 2.dp else 3.dp))
             Text(
                 text = line.romajiText,
                 color = if (isCurrent) fgSecondary else fgSecondary.copy(alpha = 0.5f),
-                fontSize = 12.sp,
+                fontSize = if (isCompact) 11.sp else 12.sp,
                 textAlign = TextAlign.Center
             )
         }
         if (showTranslation && line.translationText.isNotBlank()) {
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(if (isCompact) 2.dp else 3.dp))
             Text(
                 text = line.translationText,
                 color = if (isCurrent) fgSecondary else fgSecondary.copy(alpha = 0.55f),
-                fontSize = 12.5.sp,
-                lineHeight = 18.sp,
+                fontSize = transFontSize,
+                lineHeight = if (isCompact) 16.sp else 18.sp,
                 textAlign = TextAlign.Center
             )
         }

@@ -199,7 +199,8 @@ internal fun IosAppleMusicPlayerLayout(
     onOpenSleepTimer: () -> Unit,
     onOpenSongInfo: () -> Unit,
     onOpenPlayerStyleGallery: () -> Unit,
-    onToggleTranslation: () -> Unit = {}
+    onToggleTranslation: () -> Unit = {},
+    lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode = com.algermusic.player.model.LyricLayoutMode.NORMAL
 ) {
     val haptic = LocalHapticFeedback.current
     val menuHost = LocalLiquidMenuHost.current
@@ -451,6 +452,7 @@ internal fun IosAppleMusicPlayerLayout(
                                     iosWhite = iosWhite,
                                     iosMuted = iosMuted,
                                     lyricHighlightColor = lyricHighlightColor,
+                                    lyricLayoutMode = lyricLayoutMode,
                                     onToggleTranslation = onToggleTranslation,
                                     onSeekTo = onSeekTo
                                 )
@@ -1193,6 +1195,7 @@ private fun IosInPlaceLyricContent(
     iosWhite: Color,
     iosMuted: Color,
     lyricHighlightColor: Color,
+    lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode,
     onToggleTranslation: () -> Unit,
     onSeekTo: (Long) -> Unit
 ) {
@@ -1201,6 +1204,18 @@ private fun IosInPlaceLyricContent(
         progressFlow.map { it.activeLineIndex }.distinctUntilChanged()
     }.collectAsState(initial = progressFlow.value.activeLineIndex)
     val listState = rememberLazyListState()
+
+    val isCompact = lyricLayoutMode == com.algermusic.player.model.LyricLayoutMode.COMPACT
+    val isCentered = lyricLayoutMode == com.algermusic.player.model.LyricLayoutMode.CENTERED
+    val textAlign = if (isCentered) TextAlign.Center else TextAlign.Start
+    val horizontalAlign = if (isCentered) Alignment.CenterHorizontally else Alignment.Start
+    val itemSpacing = if (isCompact) 10.dp else 20.dp
+    val activeFontSize = if (isCompact) 21.sp else 24.sp
+    val activeLineHeight = if (isCompact) 28.sp else 33.sp
+    val inactiveFontSize = if (isCompact) 17.sp else 20.sp
+    val inactiveLineHeight = if (isCompact) 24.sp else 28.sp
+    val transFontSize = if (isCompact) 12.sp else 13.sp
+    val transLineHeight = if (isCompact) 16.sp else 18.sp
 
     LaunchedEffect(activeIdx, lines.size) {
         if (activeIdx in lines.indices) {
@@ -1227,8 +1242,8 @@ private fun IosInPlaceLyricContent(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                contentPadding = PaddingValues(vertical = if (isCompact) 14.dp else 24.dp),
+                verticalArrangement = Arrangement.spacedBy(itemSpacing)
             ) {
                 itemsIndexed(lines) { idx, line ->
                     val isCurrent = idx == activeIdx
@@ -1237,8 +1252,8 @@ private fun IosInPlaceLyricContent(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onSeekTo(line.startTimeMs.toLong()) }
-                            .padding(vertical = 2.dp),
-                        horizontalAlignment = Alignment.Start
+                            .padding(vertical = if (isCompact) 1.dp else 2.dp),
+                        horizontalAlignment = horizontalAlign
                     ) {
                         if (isCurrent) {
                             LiquidSweepLyricText(
@@ -1251,33 +1266,45 @@ private fun IosInPlaceLyricContent(
                                 lyricOffsetMs = playerState.lyricOffsetMs,
                                 sungColor = lyricHighlightColor,
                                 unsungColor = iosWhite.copy(alpha = 0.34f),
-                                fontSize = 24.sp,
-                                lineHeight = 33.sp,
+                                fontSize = activeFontSize,
+                                lineHeight = activeLineHeight,
                                 fontWeight = FontWeight.ExtraBold,
                                 maxLines = 4,
-                                textAlign = TextAlign.Start
+                                textAlign = textAlign
                             )
                         } else {
                             Text(
                                 text = line.text,
                                 color = iosWhite.copy(alpha = if (idx < activeIdx) 0.34f else 0.52f),
-                                fontSize = 20.sp,
-                                lineHeight = 28.sp,
+                                fontSize = inactiveFontSize,
+                                lineHeight = inactiveLineHeight,
                                 fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Start,
+                                textAlign = textAlign,
                                 modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        if (playerState.showRomaji && line.romajiText.isNotBlank()) {
+                            Text(
+                                text = line.romajiText,
+                                color = iosWhite.copy(alpha = if (isCurrent) 0.65f else 0.32f),
+                                fontSize = if (isCompact) 11.sp else 12.sp,
+                                lineHeight = 16.sp,
+                                textAlign = textAlign,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 2.dp)
                             )
                         }
                         if (playerState.showTranslation && line.translationText.isNotBlank()) {
                             Text(
                                 text = line.translationText,
                                 color = iosWhite.copy(alpha = if (isCurrent) 0.72f else 0.36f),
-                                fontSize = 13.sp,
-                                lineHeight = 18.sp,
-                                textAlign = TextAlign.Start,
+                                fontSize = transFontSize,
+                                lineHeight = transLineHeight,
+                                textAlign = textAlign,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 4.dp)
+                                    .padding(top = if (isCompact) 2.dp else 4.dp)
                             )
                         }
                     }
