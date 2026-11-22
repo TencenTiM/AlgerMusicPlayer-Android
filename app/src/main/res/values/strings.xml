@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AlgerMusicPlayer</string>
+    <string name="widget_lyric_double_label">透明双行歌词（息屏/锁屏）</string>
+    <string name="widget_lyric_double_desc">纯透明无底框双行实时歌词（当前句 + 译文/下一句），支持拉大外框自动放大字号，适配 LockStar 息屏、锁屏与桌面。</string>
+    <string name="widget_lyric_single_label">透明单行歌词（息屏极简）</string>
+    <string name="widget_lyric_single_desc">纯透明无底框单行居中实时歌词，支持拉大外框自动放大字号，适合放在息屏时钟日期下方。</string>
+    <string name="widget_desktop_full_label">桌面全尺寸歌词播放器 (4×4)</string>
+    <string name="widget_desktop_full_desc">专辑毛玻璃背景 + 高清封面 + 多行实时滚动双语歌词 + 完整播控与字号快捷调节，支持自由缩放全尺寸。</string>
+    <string name="widget_desktop_medium_label">桌面标准歌词卡片 (4×2)</string>
+    <string name="widget_desktop_medium_desc">高清封面 + 实时双行同步歌词 + 播放模式/切歌/收藏播控卡片，支持自由缩放。</string>
+    <string name="widget_desktop_mini_label">桌面迷你横条播放器 (4×1)</string>
+    <string name="widget_desktop_mini_desc">紧凑横条封面 + 实时单行歌词 + 切歌与收藏按钮，支持缩至 2×1 胶囊或拉大展开。</string>
+    <string name="widget_desktop_square_label">桌面方形封面播放器 (2×2)</string>
+    <string name="widget_desktop_square_desc">精致方形专辑卡片 + 实时同步歌词 + 播控按钮，支持自由缩放变形。</string>
+</resources>

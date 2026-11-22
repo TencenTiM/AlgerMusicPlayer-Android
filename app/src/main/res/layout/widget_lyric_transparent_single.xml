@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@null">
+
+    <ImageView
+        android:id="@+id/widget_lyric_bg_plate"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="fitXY"
+        android:src="@drawable/bg_widget_plate_dark"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/widget_lyric_single"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:ellipsize="end"
+        android:fontFamily="sans-serif-medium"
+        android:gravity="center"
+        android:maxLines="3"
+        android:paddingLeft="6dp"
+        android:paddingRight="6dp"
+        android:shadowColor="#B3000000"
+        android:shadowDx="0"
+        android:shadowDy="1"
+        android:shadowRadius="4"
+        android:text="♪ 实时透明歌词"
+        android:textColor="#F5FFFFFF"
+        android:textSize="16sp" />
+
+    <ImageView
+        android:id="@+id/widget_lyric_single_img"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:adjustViewBounds="true"
+        android:contentDescription="@null"
+        android:paddingLeft="6dp"
+        android:paddingRight="6dp"
+        android:scaleType="fitCenter"
+        android:visibility="gone" />
+
+</FrameLayout>

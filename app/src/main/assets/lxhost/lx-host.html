@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>LxHost</title></head>
+<body>
+<script>
+  const workers = {};
+  let gdMd5Fn = null;
+  let gdCrcTag = '';
+
+  function toHost(scriptId, data) {
+    const payload = JSON.stringify(Object.assign({ scriptId: scriptId }, data));
+    try {
+      if (window.AlgerLxBridge && typeof window.AlgerLxBridge.postMessage === 'function') {
+        window.AlgerLxBridge.postMessage(payload);
+      }
+    } catch (e) {
+      try {
+        if (window.AlgerLxBridge) {
+          window.AlgerLxBridge.postMessage(JSON.stringify({ scriptId: scriptId, type: 'script-error', message: String(e) }));
+        }
+      } catch (_) {}
+    }
+  }
+
+  function getWorker(scriptId) {
+    let w = workers[scriptId];
+    if (w) return w;
+    w = new Worker('lx-worker.js');
+    w.onmessage = (e) => toHost(scriptId, e.data);
+    w.onerror = (e) => toHost(scriptId, { type: 'script-error', message: e.message || '脚本 Worker 运行错误' });
+    workers[scriptId] = w;
+    return w;
+  }
+
+  window.__algerReceiveFromHost = function(msgJson) {
+    let m;
+    try {
+      m = typeof msgJson === 'string' ? JSON.parse(msgJson) : msgJson;
+    } catch (_) {
+      return;
+    }
+    if (!m || !m.scriptId) return;
+    switch (m.cmd) {
+      case 'init':
+        if (workers[m.scriptId]) {
+          workers[m.scriptId].terminate();
+          delete workers[m.scriptId];
+        }
+        getWorker(m.scriptId).postMessage({
+          type: 'initialize',
+          script: m.script,
+          scriptInfo: m.scriptInfo
+        });
+        break;
+      case 'invoke':
+        getWorker(m.scriptId).postMessage({
+          type: 'invoke-request',
+          callId: m.callId,
+          payload: m.payload
+        });
+        break;
+      case 'http-response':
+        getWorker(m.scriptId).postMessage({
+          type: 'http-response',
+          requestId: m.requestId,
+          response: m.response,
+          body: m.body,
+          error: m.error || undefined
+        });
+        break;
+      case 'dispose':
+        if (workers[m.scriptId]) {
+          workers[m.scriptId].terminate();
+          delete workers[m.scriptId];
+        }
+        break;
+      case 'gd-md5':
+        try {
+          if (m.crcJs && m.crcTag !== gdCrcTag) {
+            const fakeWin = {
+              location: { hostname: 'music.gdstudio.org' },
+              XMLHttpRequest: function () {
+                this.open = function () {};
+                this.send = function () { this.status = 200; this.responseText = '1794625903'; };
+              }
+            };
+            const factory = new Function(
+              'window', 'mkPlayer', 'XMLHttpRequest', 'define', 'module', 'exports',
+              m.crcJs + '\nreturn (typeof md5 === "function" && md5) || this.md5 || window.md5;'
+            );
+            gdMd5Fn = factory.call(fakeWin, fakeWin, { version: '2026.11.11' }, fakeWin.XMLHttpRequest, undefined, undefined, undefined);
+            gdCrcTag = m.crcTag || '';
+          }
+          const hash = typeof gdMd5Fn === 'function' ? String(gdMd5Fn(String(m.raw || ''))) : '';
+          toHost(m.scriptId, { type: 'invoke-result', callId: m.callId, result: hash });
+        } catch (err) {
+          toHost(m.scriptId, { type: 'invoke-error', callId: m.callId, message: String(err) });
+        }
+        break;
+    }
+  };
+
+  toHost('__host__', { type: 'host-ready' });
+</script>
+</body>
+</html>
