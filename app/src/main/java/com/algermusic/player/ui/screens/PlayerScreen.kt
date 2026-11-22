@@ -168,6 +168,8 @@ import com.algermusic.player.ui.components.AlgerGlassMenuItem
 import com.algermusic.player.ui.components.AlgerLiquidGlassStyles
 import com.algermusic.player.ui.components.AlgerLiquidMenuHostState
 import com.algermusic.player.ui.components.AlgerLiquidMenuOverlayHost
+import com.algermusic.player.ui.components.algerLayerBackdrop
+import com.algermusic.player.ui.components.rememberAlgerLayerBackdrop
 import com.algermusic.player.ui.components.CoverArtImage
 import com.algermusic.player.ui.components.LiquidGlassCapsule
 import com.algermusic.player.ui.components.LiquidGlassTier
@@ -371,7 +373,7 @@ fun PlayerScreen(
         drawRect(playerBaseBg)
         drawContent()
     }
-    val playerContentBackdrop = rememberLayerBackdrop {
+    val playerContentBackdrop = rememberAlgerLayerBackdrop {
         drawRect(playerBaseBg)
         drawContent()
     }
@@ -379,6 +381,17 @@ fun PlayerScreen(
         showSongInfoSheet ||
         iosOutputCardVisible ||
         hasExternalOverlay
+    // 弹窗/菜单打开后采集一帧即冻结离屏重录，防止播放进度条/120Hz歌词/黑胶旋转每帧触发全屏重模糊导致卡顿
+    LaunchedEffect(needPlayerContentBackdrop, song?.id) {
+        if (needPlayerContentBackdrop) {
+            playerContentBackdrop.setScrollFrozen(false)
+            playerContentBackdrop.requestRecapture()
+            kotlinx.coroutines.delay(90L)
+            playerContentBackdrop.setScrollFrozen(true)
+        } else {
+            playerContentBackdrop.setScrollFrozen(false)
+        }
+    }
     LaunchedEffect(playerContentBackdrop) {
         onBackdropReady(playerContentBackdrop)
     }
@@ -395,7 +408,7 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .then(
                     if (needPlayerContentBackdrop) {
-                        Modifier.layerBackdrop(playerContentBackdrop)
+                        Modifier.algerLayerBackdrop(playerContentBackdrop)
                     } else {
                         Modifier
                     }

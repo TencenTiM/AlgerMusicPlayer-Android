@@ -434,13 +434,13 @@ object AlgerLiquidGlassStyles {
     )
 
     val Sheet = LiquidGlassStyle(
-        blurRadius = 42.dp,
-        maxBlurPx = 128f,
-        refractionHeight = 8.dp,
-        refractionAmount = 14.dp,
+        blurRadius = 24.dp,
+        maxBlurPx = 56f,
+        refractionHeight = 0.dp,
+        refractionAmount = 0.dp,
         chromaticAberration = false,
-        lightTint = Color(0xFFFAFBFD).copy(alpha = 0.58f),
-        darkTint = Color(0xFF151922).copy(alpha = 0.62f),
+        lightTint = Color(0xFFFAFBFD).copy(alpha = 0.64f),
+        darkTint = Color(0xFF151922).copy(alpha = 0.68f),
         fallbackLightColor = Color(0xFFF5F7FB).copy(alpha = 0.96f),
         fallbackDarkColor = Color(0xFF151820).copy(alpha = 0.96f)
     )
@@ -493,7 +493,10 @@ fun Modifier.algerLiquidGlass(
             shape = { shape },
             effects = {
                 blur(computeClampedBlurRadiusPx(style.blurRadius.toPx(), style.maxBlurPx))
-                if (tier == LiquidGlassTier.FULL_LIQUID_GLASS) {
+                if (tier == LiquidGlassTier.FULL_LIQUID_GLASS &&
+                    style.refractionHeight > 0.dp &&
+                    style.refractionAmount > 0.dp
+                ) {
                     lens(
                         refractionHeight = style.refractionHeight.toPx(),
                         refractionAmount = style.refractionAmount.toPx(),

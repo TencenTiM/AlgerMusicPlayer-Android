@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -83,8 +84,7 @@ fun AlgerLiquidGlassBottomSheet(
         dismissSmooth()
     }
 
-    val progress = enterAnim.value.coerceIn(0f, 1f)
-    val scrimAlpha = (if (isDarkTheme) 0.50f else 0.34f) * progress
+    val maxScrimAlpha = if (isDarkTheme) 0.50f else 0.34f
     val shadowPx = with(density) { 26.dp.toPx() }
     val rimBrush = remember(isDarkTheme) {
         Brush.verticalGradient(
@@ -100,11 +100,16 @@ fun AlgerLiquidGlassBottomSheet(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomCenter
     ) {
-        // 沉稳半透明遮罩：点击外部关闭
+        // 沉稳半透明遮罩：Draw 阶段直读 enterAnim.value，展开/收起零重组
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = scrimAlpha))
+                .drawBehind {
+                    val p = enterAnim.value.coerceIn(0f, 1f)
+                    if (p > 0.001f) {
+                        drawRect(Color.Black.copy(alpha = maxScrimAlpha * p))
+                    }
+                }
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -112,7 +117,7 @@ fun AlgerLiquidGlassBottomSheet(
                 )
         )
 
-        // 厚实磨砂液态玻璃弹窗（更高模糊半径 + 更厚乳白/深灰磨砂层 + 顶部高光描边 + 沉稳阻尼上浮；平板居中限宽）
+        // 厚实磨砂液态玻璃弹窗（graphicsLayer 直读动画值，展开/拖拽/收起全程零重组；平板居中限宽）
         val tabletMetrics = rememberTabletLayoutMetrics()
         Column(
             modifier = Modifier
@@ -124,13 +129,14 @@ fun AlgerLiquidGlassBottomSheet(
                     }
                 )
                 .graphicsLayer {
-                    val slidePx = (1f - progress) * (size.height.coerceAtLeast(480f))
+                    val p = enterAnim.value.coerceIn(0f, 1f)
+                    val slidePx = (1f - p) * (size.height.coerceAtLeast(480f))
                     translationY = slidePx + dragOffsetY.coerceAtLeast(0f)
-                    val s = 0.965f + 0.035f * progress
+                    val s = 0.965f + 0.035f * p
                     scaleX = s
                     scaleY = s
                     transformOrigin = TransformOrigin(0.5f, 1f)
-                    shadowElevation = shadowPx * progress
+                    shadowElevation = shadowPx * p
                     shape = sheetShape
                     clip = false
                     ambientShadowColor = Color.Black.copy(alpha = 0.28f)
