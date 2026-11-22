@@ -19,6 +19,17 @@ import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
+data class UpdateMirrorRoute(
+    val label: String,
+    val prefix: String
+) {
+    fun wrapUrl(rawUrl: String): String {
+        if (prefix.isBlank()) return rawUrl
+        val normalizedPrefix = if (prefix.endsWith("/")) prefix else "$prefix/"
+        return "$normalizedPrefix$rawUrl"
+    }
+}
+
 data class AppReleaseInfo(
     val tagName: String,
     val versionName: String,
@@ -28,12 +39,17 @@ data class AppReleaseInfo(
     val publishedAt: String,
     val apkDownloadUrl: String?,
     val apkFileName: String?,
-    val apkSizeBytes: Long
+    val apkSizeBytes: Long,
+    val resolvedRouteLabel: String = "GitHub 直连"
 )
 
 sealed interface UpdateCheckResult {
     data class UpdateAvailable(val release: AppReleaseInfo) : UpdateCheckResult
-    data class UpToDate(val currentVersion: String, val latestRelease: AppReleaseInfo?) : UpdateCheckResult
+    data class UpToDate(
+        val currentVersion: String,
+        val latestRelease: AppReleaseInfo?,
+        val resolvedRouteLabel: String = "GitHub 直连"
+    ) : UpdateCheckResult
     data class Error(val message: String) : UpdateCheckResult
 }
 
@@ -65,34 +81,40 @@ class AppUpdateService(
         coerceInputValues = true
     }
 
+    // 单节点快速失败，确保大陆节点故障时秒级切到下一条加速线路
     private val apiClient: OkHttpClient = baseClient.newBuilder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(12, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
 
     private val downloadClient: OkHttpClient = baseClient.newBuilder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
 
     suspend fun checkForUpdate(currentVersion: String): UpdateCheckResult = withContext(Dispatchers.IO) {
         try {
-            val latestResult = fetchLatestReleaseDto()
-                ?: return@withContext UpdateCheckResult.UpToDate(
+            val fetched = fetchLatestReleaseWithMirrors()
+            if (fetched == null) {
+                return@withContext UpdateCheckResult.UpToDate(
                     currentVersion = normalizeVersion(currentVersion),
-                    latestRelease = null
+                    latestRelease = null,
+                    resolvedRouteLabel = "大陆加速"
                 )
-            val release = toReleaseInfo(latestResult)
+            }
+            val (dto, routeLabel) = fetched
+            val release = toReleaseInfo(dto, routeLabel)
             if (isNewerVersion(release.versionName, currentVersion)) {
                 UpdateCheckResult.UpdateAvailable(release)
             } else {
                 UpdateCheckResult.UpToDate(
                     currentVersion = normalizeVersion(currentVersion),
-                    latestRelease = release
+                    latestRelease = release,
+                    resolvedRouteLabel = routeLabel
                 )
             }
         } catch (e: Exception) {
@@ -100,49 +122,63 @@ class AppUpdateService(
         }
     }
 
-    private fun fetchLatestReleaseDto(): GitHubReleaseDto? {
-        val latestRequest = Request.Builder()
-            .url(LATEST_RELEASE_API_URL)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .build()
+    private fun fetchLatestReleaseWithMirrors(): Pair<GitHubReleaseDto, String>? {
+        val errors = mutableListOf<String>()
+        var sawNotFound = false
 
-        apiClient.newCall(latestRequest).execute().use { resp ->
-            if (resp.isSuccessful) {
-                val body = resp.body?.string().orEmpty()
-                if (body.isNotBlank()) {
-                    return json.decodeFromString<GitHubReleaseDto>(body)
+        for (route in API_MIRROR_ROUTES) {
+            // 1) 优先查 /releases/latest
+            val latestUrl = route.wrapUrl(LATEST_RELEASE_API_URL)
+            try {
+                val request = Request.Builder()
+                    .url(latestUrl)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+                apiClient.newCall(request).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string().orEmpty()
+                        if (body.trimStart().startsWith("{")) {
+                            return json.decodeFromString<GitHubReleaseDto>(body) to route.label
+                        }
+                    } else if (resp.code == 404) {
+                        sawNotFound = true
+                        // 2) 若仓库暂无正式 latest，同线路回退查列表
+                        val listUrl = route.wrapUrl(RELEASES_LIST_API_URL)
+                        val listReq = Request.Builder()
+                            .url(listUrl)
+                            .header("Accept", "application/vnd.github+json")
+                            .header("User-Agent", USER_AGENT)
+                            .build()
+                        apiClient.newCall(listReq).execute().use { listResp ->
+                            if (listResp.isSuccessful) {
+                                val listBody = listResp.body?.string().orEmpty()
+                                if (listBody.trimStart().startsWith("[")) {
+                                    val list = json.decodeFromString<List<GitHubReleaseDto>>(listBody)
+                                    val first = list.firstOrNull { !it.draft }
+                                    return if (first != null) first to route.label else null
+                                }
+                            }
+                        }
+                    } else {
+                        errors.add("${route.label}: HTTP ${resp.code}")
+                    }
                 }
-            }
-            if (resp.code != 404) {
-                throw IllegalStateException("GitHub API 返回 HTTP ${resp.code}")
+            } catch (e: Exception) {
+                errors.add("${route.label}: ${e.message ?: "连接失败"}")
             }
         }
 
-        // 若尚无正式 latest release（例如只有 prerelease 或刚建仓库），回退查询列表
-        val listRequest = Request.Builder()
-            .url(RELEASES_LIST_API_URL)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", USER_AGENT)
-            .build()
-
-        apiClient.newCall(listRequest).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                if (resp.code == 404) return null
-                throw IllegalStateException("GitHub API 返回 HTTP ${resp.code}")
-            }
-            val body = resp.body?.string().orEmpty()
-            if (body.isBlank()) return null
-            val list = json.decodeFromString<List<GitHubReleaseDto>>(body)
-            return list.firstOrNull { !it.draft }
-        }
+        if (sawNotFound && errors.isEmpty()) return null
+        throw IllegalStateException("所有加速线路均连接失败，请稍后重试")
     }
 
     suspend fun downloadApk(
         release: AppReleaseInfo,
+        onRouteChanged: (String) -> Unit = {},
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val downloadUrl = release.apkDownloadUrl
+        val rawDownloadUrl = release.apkDownloadUrl
             ?: throw IllegalStateException("该版本未附带 APK 安装包，请前往 GitHub 页面手动下载")
 
         val updatesDir = resolveUpdatesDir()
@@ -162,54 +198,84 @@ class AppUpdateService(
         val targetFile = File(updatesDir, safeName)
         val tempFile = File(updatesDir, "$safeName.tmp")
 
-        val request = Request.Builder()
-            .url(downloadUrl)
-            .header("User-Agent", USER_AGENT)
-            .build()
+        val candidates = buildDownloadCandidateRoutes(rawDownloadUrl)
+        var lastError: Throwable? = null
 
-        downloadClient.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("APK 下载失败（HTTP ${resp.code}）")
-            }
-            val body = resp.body ?: throw IllegalStateException("下载响应体为空")
-            val totalBytes = body.contentLength().takeIf { it > 0L } ?: release.apkSizeBytes
+        for ((route, candidateUrl) in candidates) {
+            coroutineContext.ensureActive()
+            onRouteChanged(route.label)
+            runCatching { tempFile.delete() }
 
             try {
-                body.byteStream().use { input ->
-                    FileOutputStream(tempFile).use { output ->
-                        val buffer = ByteArray(16 * 1024)
-                        var downloaded = 0L
-                        var lastReportTime = 0L
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            val now = System.currentTimeMillis()
-                            if (now - lastReportTime >= 80L || (totalBytes > 0L && downloaded >= totalBytes)) {
-                                lastReportTime = now
-                                onProgress(downloaded, totalBytes)
+                val request = Request.Builder()
+                    .url(candidateUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+
+                downloadClient.newCall(request).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw IllegalStateException("${route.label} 返回 HTTP ${resp.code}")
+                    }
+                    val contentType = resp.header("Content-Type").orEmpty().lowercase()
+                    if (contentType.contains("text/html")) {
+                        throw IllegalStateException("${route.label} 返回了网页而非安装包")
+                    }
+                    val body = resp.body ?: throw IllegalStateException("下载响应体为空")
+                    val totalBytes = body.contentLength().takeIf { it > 0L } ?: release.apkSizeBytes
+
+                    body.byteStream().use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            val buffer = ByteArray(16 * 1024)
+                            var downloaded = 0L
+                            var lastReportTime = 0L
+                            var headerChecked = false
+                            while (true) {
+                                coroutineContext.ensureActive()
+                                val read = input.read(buffer)
+                                if (read == -1) break
+                                if (!headerChecked) {
+                                    if (read < 2 || !isValidApkHeader(buffer[0], buffer[1])) {
+                                        throw IllegalStateException("${route.label} 文件头校验失败")
+                                    }
+                                    headerChecked = true
+                                }
+                                output.write(buffer, 0, read)
+                                downloaded += read
+                                val now = System.currentTimeMillis()
+                                if (now - lastReportTime >= 80L || (totalBytes > 0L && downloaded >= totalBytes)) {
+                                    lastReportTime = now
+                                    onProgress(downloaded, totalBytes)
+                                }
                             }
+                            if (downloaded <= 0L) {
+                                throw IllegalStateException("${route.label} 下载内容为空")
+                            }
+                            output.flush()
+                            onProgress(downloaded, totalBytes.coerceAtLeast(downloaded))
                         }
-                        output.flush()
-                        onProgress(downloaded, totalBytes.coerceAtLeast(downloaded))
                     }
                 }
-            } catch (t: Throwable) {
+
+                if (targetFile.exists()) {
+                    targetFile.delete()
+                }
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+                return@withContext targetFile
+            } catch (ce: kotlinx.coroutines.CancellationException) {
                 runCatching { tempFile.delete() }
-                throw t
+                throw ce
+            } catch (e: Throwable) {
+                runCatching { tempFile.delete() }
+                lastError = e
             }
         }
 
-        if (targetFile.exists()) {
-            targetFile.delete()
-        }
-        if (!tempFile.renameTo(targetFile)) {
-            tempFile.copyTo(targetFile, overwrite = true)
-            tempFile.delete()
-        }
-        targetFile
+        throw IllegalStateException(
+            lastError?.message?.takeIf { it.isNotBlank() } ?: "所有下载加速节点均不可用，请前往 GitHub 页面下载"
+        )
     }
 
     private fun resolveUpdatesDir(): File {
@@ -256,15 +322,46 @@ class AppUpdateService(
             "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=5"
         private const val USER_AGENT = "AlgerMusicPlayer-Android"
 
-        internal fun parseReleaseJson(rawJson: String): AppReleaseInfo {
+        // 大陆可用 GitHub API 加速节点（实测支持 api.github.com）+ 直连兜底
+        val API_MIRROR_ROUTES: List<UpdateMirrorRoute> = listOf(
+            UpdateMirrorRoute(label = "大陆加速 · EdgeOne", prefix = "https://edgeone.gh-proxy.com/"),
+            UpdateMirrorRoute(label = "大陆加速 · CDN", prefix = "https://cdn.gh-proxy.com/"),
+            UpdateMirrorRoute(label = "大陆加速 · Mirror", prefix = "https://gh-proxy.org/"),
+            UpdateMirrorRoute(label = "GitHub 直连", prefix = "")
+        )
+
+        // 大陆可用 APK 下载加速节点 + 直连兜底
+        val DOWNLOAD_MIRROR_ROUTES: List<UpdateMirrorRoute> = listOf(
+            UpdateMirrorRoute(label = "大陆加速 · EdgeOne", prefix = "https://edgeone.gh-proxy.com/"),
+            UpdateMirrorRoute(label = "大陆加速 · CDN", prefix = "https://cdn.gh-proxy.com/"),
+            UpdateMirrorRoute(label = "大陆加速 · Mirror", prefix = "https://gh-proxy.org/"),
+            UpdateMirrorRoute(label = "大陆加速 · GHF", prefix = "https://ghfast.top/"),
+            UpdateMirrorRoute(label = "大陆加速 · VIP", prefix = "https://ghproxy.vip/"),
+            UpdateMirrorRoute(label = "GitHub 直连", prefix = "")
+        )
+
+        fun buildDownloadCandidateRoutes(rawDownloadUrl: String): List<Pair<UpdateMirrorRoute, String>> {
+            val isGitHubAsset = rawDownloadUrl.startsWith("https://github.com/", ignoreCase = true) ||
+                rawDownloadUrl.startsWith("https://objects.githubusercontent.com/", ignoreCase = true)
+            if (!isGitHubAsset) {
+                return listOf(UpdateMirrorRoute(label = "直连下载", prefix = "") to rawDownloadUrl)
+            }
+            return DOWNLOAD_MIRROR_ROUTES.map { route -> route to route.wrapUrl(rawDownloadUrl) }
+        }
+
+        fun isValidApkHeader(firstByte: Byte, secondByte: Byte): Boolean {
+            return firstByte == 0x50.toByte() && secondByte == 0x4B.toByte()
+        }
+
+        internal fun parseReleaseJson(rawJson: String, routeLabel: String = "GitHub 直连"): AppReleaseInfo {
             val parser = Json {
                 ignoreUnknownKeys = true
                 coerceInputValues = true
             }
-            return toReleaseInfo(parser.decodeFromString<GitHubReleaseDto>(rawJson))
+            return toReleaseInfo(parser.decodeFromString<GitHubReleaseDto>(rawJson), routeLabel)
         }
 
-        private fun toReleaseInfo(dto: GitHubReleaseDto): AppReleaseInfo {
+        private fun toReleaseInfo(dto: GitHubReleaseDto, routeLabel: String): AppReleaseInfo {
             val apkAssets = dto.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
             val preferredApk = apkAssets.firstOrNull {
                 it.name.contains("release", ignoreCase = true) && !it.name.contains("unsigned", ignoreCase = true)
@@ -280,7 +377,8 @@ class AppUpdateService(
                 publishedAt = dto.publishedAt,
                 apkDownloadUrl = preferredApk?.browserDownloadUrl?.takeIf { it.isNotBlank() },
                 apkFileName = preferredApk?.name?.takeIf { it.isNotBlank() },
-                apkSizeBytes = preferredApk?.size ?: 0L
+                apkSizeBytes = preferredApk?.size ?: 0L,
+                resolvedRouteLabel = routeLabel
             )
         }
 
@@ -297,7 +395,6 @@ class AppUpdateService(
                 val c = currentParts.getOrElse(i) { 0 }
                 if (r != c) return r > c
             }
-            // 主版本号相同时，正式版高于带预发布后缀的版本（如 1.0.1 > 1.0.1-beta.1）
             val remoteHasPre = normalizeVersion(remoteVersion).contains('-')
             val currentHasPre = normalizeVersion(currentVersion).contains('-')
             if (currentHasPre && !remoteHasPre) return true

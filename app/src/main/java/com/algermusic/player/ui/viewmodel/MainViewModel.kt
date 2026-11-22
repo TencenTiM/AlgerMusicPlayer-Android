@@ -70,6 +70,7 @@ data class AppUpdateUiState(
     val downloadedBytes: Long = 0L,
     val totalBytes: Long = 0L,
     val downloadedApkPath: String? = null,
+    val activeRouteLabel: String? = null,
     val needsInstallPermissionHint: Boolean = false,
     val errorMessage: String? = null
 ) {
@@ -2842,6 +2843,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             hasChecked = true,
                             isUpToDate = false,
                             latestRelease = res.release,
+                            activeRouteLabel = res.release.resolvedRouteLabel,
                             downloadedApkPath = null,
                             downloadedBytes = 0L,
                             totalBytes = res.release.apkSizeBytes,
@@ -2856,6 +2858,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             hasChecked = true,
                             isUpToDate = true,
                             latestRelease = res.latestRelease,
+                            activeRouteLabel = res.resolvedRouteLabel,
                             errorMessage = null
                         )
                     }
@@ -2889,14 +2892,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             try {
-                val apkFile = container.appUpdateService.downloadApk(release) { downloaded, total ->
-                    _appUpdate.update { state ->
-                        state.copy(
-                            downloadedBytes = downloaded,
-                            totalBytes = total.coerceAtLeast(state.totalBytes)
-                        )
+                val apkFile = container.appUpdateService.downloadApk(
+                    release = release,
+                    onRouteChanged = { routeLabel ->
+                        _appUpdate.update { state -> state.copy(activeRouteLabel = routeLabel) }
+                    },
+                    onProgress = { downloaded, total ->
+                        _appUpdate.update { state ->
+                            state.copy(
+                                downloadedBytes = downloaded,
+                                totalBytes = total.coerceAtLeast(state.totalBytes)
+                            )
+                        }
                     }
-                }
+                )
                 _appUpdate.update {
                     it.copy(
                         isDownloading = false,

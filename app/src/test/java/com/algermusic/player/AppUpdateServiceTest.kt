@@ -43,17 +43,32 @@ class AppUpdateServiceTest {
                 {
                   "name": "AlgerMusicPlayer-v1.0.1-release.apk",
                   "size": 28456789,
-                  "browser_download_url": "https://example.com/AlgerMusicPlayer-v1.0.1-release.apk"
+                  "browser_download_url": "https://github.com/TencenTiM/AlgerMusicPlayer-Android/releases/download/v1.0.1/AlgerMusicPlayer-v1.0.1-release.apk"
                 }
               ]
             }
         """.trimIndent()
 
-        val release = AppUpdateService.parseReleaseJson(sampleJson)
+        val release = AppUpdateService.parseReleaseJson(sampleJson, "大陆加速 · EdgeOne")
         assertEquals("v1.0.1", release.tagName)
         assertEquals("1.0.1", release.versionName)
         assertEquals("AlgerMusicPlayer-v1.0.1-release.apk", release.apkFileName)
-        assertEquals("https://example.com/AlgerMusicPlayer-v1.0.1-release.apk", release.apkDownloadUrl)
+        assertEquals("大陆加速 · EdgeOne", release.resolvedRouteLabel)
         assertEquals(28456789L, release.apkSizeBytes)
+    }
+
+    @Test
+    fun downloadCandidateRoutesPrioritizeChinaMirrorsAndFallbackToDirect() {
+        val raw = "https://github.com/TencenTiM/AlgerMusicPlayer-Android/releases/download/v1.0.0/app-release.apk"
+        val routes = AppUpdateService.buildDownloadCandidateRoutes(raw)
+        assertTrue(routes.size >= 4)
+        assertTrue(routes.first().second.startsWith("https://edgeone.gh-proxy.com/https://github.com/"))
+        assertEquals(raw, routes.last().second)
+    }
+
+    @Test
+    fun apkMagicHeaderValidationRejectsHtmlPages() {
+        assertTrue(AppUpdateService.isValidApkHeader('P'.code.toByte(), 'K'.code.toByte()))
+        assertFalse(AppUpdateService.isValidApkHeader('<'.code.toByte(), '!'.code.toByte()))
     }
 }

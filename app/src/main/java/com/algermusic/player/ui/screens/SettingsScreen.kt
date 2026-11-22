@@ -1893,7 +1893,15 @@ private fun AppUpdateLiquidBottomSheet(
                         color = primaryText
                     )
                     Text(
-                        text = "当前版本 v${state.currentVersion} · GitHub Releases",
+                        text = buildString {
+                            append("当前版本 v${state.currentVersion}")
+                            val route = state.activeRouteLabel
+                            if (!route.isNullOrBlank()) {
+                                append(" · $route")
+                            } else {
+                                append(" · 大陆加速通道")
+                            }
+                        },
                         fontSize = 12.5.sp,
                         color = secondaryText
                     )
