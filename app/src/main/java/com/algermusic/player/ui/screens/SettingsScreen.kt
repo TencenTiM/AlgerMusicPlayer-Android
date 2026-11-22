@@ -1,8 +1,12 @@
 package com.algermusic.player.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -61,6 +65,7 @@ import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Image
@@ -848,6 +853,31 @@ fun SettingsScreen(
                                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     )
                                 }
+                            }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.Groups,
+                            iconBg = IosTeal,
+                            title = "Alger Music Player 爆改群",
+                            valueText = "QQ群 1137351952",
+                            onClick = {
+                                runCatching {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    cm?.setPrimaryClip(ClipData.newPlainText("QQ群号", "1137351952"))
+                                }
+                                val opened = runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/ScReTV5fA4"))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                    true
+                                }.getOrDefault(false)
+                                Toast.makeText(
+                                    context,
+                                    if (opened) "已复制群号 1137351952 并跳转加群" else "已复制 QQ 群号：1137351952",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         )
                     }
