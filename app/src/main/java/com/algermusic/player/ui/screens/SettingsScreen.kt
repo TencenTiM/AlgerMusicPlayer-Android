@@ -1,6 +1,7 @@
 package com.algermusic.player.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -39,9 +41,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -67,6 +71,7 @@ import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material.icons.outlined.CloudDownload
@@ -77,9 +82,14 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -114,7 +124,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.algermusic.player.BuildConfig
 import com.algermusic.player.data.unblock.UnblockMusicService
+import com.algermusic.player.data.update.AppUpdateService
 import com.algermusic.player.model.AppSettings
 import com.algermusic.player.model.InfiniteContinueMode
 import com.algermusic.player.model.MusicQualityLevel
@@ -122,12 +134,14 @@ import com.algermusic.player.model.NasCacheWhilePlayingMode
 import com.algermusic.player.model.NasNetworkPlayMode
 import com.algermusic.player.model.PlayerStyle
 import com.algermusic.player.model.ThemeMode
+import com.algermusic.player.ui.components.AlgerLiquidGlassBottomSheet
 import com.algermusic.player.ui.components.LiquidGlassCapsule
 import com.algermusic.player.ui.components.LiquidGlassTier
 import com.algermusic.player.ui.components.LocalLiquidGlassEnabled
 import com.algermusic.player.ui.components.resolveLiquidGlassTier
 import com.algermusic.player.ui.theme.EmeraldAccent
 import com.algermusic.player.ui.theme.LocalIsDarkTheme
+import com.algermusic.player.ui.viewmodel.AppUpdateUiState
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -186,7 +200,12 @@ fun SettingsScreen(
     onRealIpSave: (Boolean, String) -> Unit,
     onConcurrencyChange: (Int) -> Unit,
     onEmbedTagsChange: (Boolean) -> Unit,
-    onSaveLrcChange: (Boolean) -> Unit
+    onSaveLrcChange: (Boolean) -> Unit,
+    appUpdateState: AppUpdateUiState = AppUpdateUiState(),
+    onCheckAppUpdate: () -> Unit = {},
+    onStartAppUpdateDownload: () -> Unit = {},
+    onCancelAppUpdateDownload: () -> Unit = {},
+    onInstallAppUpdate: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDark = LocalIsDarkTheme.current
@@ -208,6 +227,7 @@ fun SettingsScreen(
     var rootSize by remember { mutableStateOf(IntSize.Zero) }
     var activeMenu by remember { mutableStateOf<ActiveIosPopoverMenu?>(null) }
     var menuSelectedKeyOverride by remember { mutableStateOf<String?>(null) }
+    var showUpdateSheet by remember { mutableStateOf(false) }
     val menuScale = remember { Animatable(0.38f) }
     val menuAlpha = remember { Animatable(0f) }
 
@@ -704,6 +724,14 @@ fun SettingsScreen(
 
                 // 6. 关于
                 item(key = "sec_about") {
+                    val updateStatusText = when {
+                        appUpdateState.isDownloading -> "下载中 ${(appUpdateState.downloadProgress * 100).roundToInt()}%"
+                        appUpdateState.downloadedApkPath != null -> "已下载，点击安装"
+                        appUpdateState.isChecking -> "检查中..."
+                        appUpdateState.hasUpdate -> "发现 v${appUpdateState.latestRelease?.versionName}"
+                        appUpdateState.hasChecked && appUpdateState.isUpToDate -> "已是最新"
+                        else -> "GitHub"
+                    }
                     IosSettingsGroup(
                         headerIcon = Icons.Outlined.Info,
                         headerTitle = "关于",
@@ -715,9 +743,37 @@ fun SettingsScreen(
                             icon = Icons.Filled.Info,
                             iconBg = EmeraldAccent,
                             title = "AlgerMusicPlayer",
-                            valueText = "Android 原生版",
+                            valueText = "v${BuildConfig.VERSION_NAME}",
                             showChevron = false,
                             onClick = {}
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.SystemUpdate,
+                            iconBg = IosBlue,
+                            title = "检查更新",
+                            valueText = updateStatusText,
+                            onClick = {
+                                showUpdateSheet = true
+                                if (!appUpdateState.isChecking && !appUpdateState.isDownloading) {
+                                    onCheckAppUpdate()
+                                }
+                            }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.Public,
+                            iconBg = IosIndigo,
+                            title = "GitHub 开源仓库",
+                            valueText = "TencenTiM",
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateService.GITHUB_REPO_URL))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            }
                         )
                     }
                 }
@@ -737,6 +793,27 @@ fun SettingsScreen(
                 backdrop = settingsBackdrop,
                 isDark = isDark,
                 onDismiss = { dismissPopover() }
+            )
+        }
+
+        if (showUpdateSheet) {
+            AppUpdateLiquidBottomSheet(
+                state = appUpdateState,
+                isDark = isDark,
+                backdrop = settingsBackdrop,
+                onCheckAgain = onCheckAppUpdate,
+                onStartDownload = onStartAppUpdateDownload,
+                onCancelDownload = onCancelAppUpdateDownload,
+                onInstallNow = onInstallAppUpdate,
+                onOpenGitHub = { url ->
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                },
+                onDismiss = { showUpdateSheet = false }
             )
         }
     }
@@ -1763,4 +1840,281 @@ private fun IosAodWidgetGuideDialog(
             null
         }
     )
+}
+
+@Composable
+private fun AppUpdateLiquidBottomSheet(
+    state: AppUpdateUiState,
+    isDark: Boolean,
+    backdrop: Backdrop,
+    onCheckAgain: () -> Unit,
+    onStartDownload: () -> Unit,
+    onCancelDownload: () -> Unit,
+    onInstallNow: () -> Unit,
+    onOpenGitHub: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val primaryText = MaterialTheme.colorScheme.onSurface
+    val secondaryText = if (isDark) Color.White.copy(alpha = 0.68f) else Color(0xFF5A5A60)
+    val release = state.latestRelease
+    val hasDownloadedApk = !state.downloadedApkPath.isNullOrBlank()
+
+    AlgerLiquidGlassBottomSheet(
+        onDismiss = onDismiss,
+        backdrop = backdrop
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                IosLeadingIconBadge(
+                    icon = Icons.Filled.SystemUpdate,
+                    bgColor = if (state.hasUpdate) EmeraldAccent else IosBlue,
+                    isCircle = true
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            state.isChecking -> "正在检查更新..."
+                            state.hasUpdate -> "发现新版本 v${release?.versionName}"
+                            state.hasChecked && state.isUpToDate -> "当前已是最新版本"
+                            state.errorMessage != null -> "检查更新失败"
+                            else -> "应用更新"
+                        },
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryText
+                    )
+                    Text(
+                        text = "当前版本 v${state.currentVersion} · GitHub Releases",
+                        fontSize = 12.5.sp,
+                        color = secondaryText
+                    )
+                }
+            }
+
+            when {
+                state.isChecking -> {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.5.dp,
+                            color = EmeraldAccent
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "正在连接 GitHub 获取最新版本信息...",
+                            fontSize = 14.sp,
+                            color = secondaryText
+                        )
+                    }
+                }
+
+                state.errorMessage != null -> {
+                    Text(
+                        text = state.errorMessage,
+                        fontSize = 13.5.sp,
+                        color = Color(0xFFFF453A),
+                        lineHeight = 20.sp
+                    )
+                }
+
+                state.hasUpdate && release != null -> {
+                    val notes = release.releaseNotes.ifBlank { "包含性能优化与体验改进，建议更新。" }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 200.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (isDark) Color.White.copy(alpha = 0.06f)
+                                else Color.Black.copy(alpha = 0.045f)
+                            )
+                            .verticalScroll(rememberScrollState())
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (release.apkSizeBytes > 0L) {
+                            Text(
+                                text = "安装包大小：${formatUpdateBytes(release.apkSizeBytes)}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = EmeraldAccent
+                            )
+                        }
+                        Text(
+                            text = notes,
+                            fontSize = 13.5.sp,
+                            lineHeight = 20.sp,
+                            color = primaryText.copy(alpha = 0.9f)
+                        )
+                    }
+
+                    if (state.isDownloading) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { state.downloadProgress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(7.dp)
+                                    .clip(CircleShape),
+                                color = EmeraldAccent,
+                                trackColor = primaryText.copy(alpha = 0.14f)
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "${formatUpdateBytes(state.downloadedBytes)} / ${
+                                        if (state.totalBytes > 0L) formatUpdateBytes(state.totalBytes) else "计算中"
+                                    }",
+                                    fontSize = 12.sp,
+                                    color = secondaryText
+                                )
+                                Text(
+                                    text = "${(state.downloadProgress * 100).roundToInt()}%",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = EmeraldAccent
+                                )
+                            }
+                        }
+                    }
+
+                    if (state.needsInstallPermissionHint) {
+                        Text(
+                            text = "已打开系统「安装未知应用」权限页，开启允许后返回此页点击「立即安装」即可完成更新。",
+                            fontSize = 12.5.sp,
+                            lineHeight = 18.sp,
+                            color = IosOrange
+                        )
+                    }
+                }
+
+                state.hasChecked && state.isUpToDate -> {
+                    Text(
+                        text = if (release != null) {
+                            "当前 v${state.currentVersion} 已与 GitHub 最新版本（${release.tagName}）同步。"
+                        } else {
+                            "当前已是 v${state.currentVersion}，GitHub 暂无更新版本发布。"
+                        },
+                        fontSize = 13.5.sp,
+                        lineHeight = 20.sp,
+                        color = secondaryText
+                    )
+                }
+            }
+
+            // 底部主操作按钮区
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val targetUrl = release?.htmlUrl ?: AppUpdateService.GITHUB_RELEASES_URL
+                OutlinedButton(
+                    onClick = { onOpenGitHub(targetUrl) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text(
+                        text = "GitHub 页面",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                when {
+                    state.isDownloading -> {
+                        Button(
+                            onClick = onCancelDownload,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFF453A),
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("取消下载", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    hasDownloadedApk -> {
+                        Button(
+                            onClick = onInstallNow,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldAccent,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("立即安装", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    state.hasUpdate && release?.apkDownloadUrl != null -> {
+                        Button(
+                            onClick = onStartDownload,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldAccent,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("应用内更新", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    else -> {
+                        Button(
+                            onClick = onCheckAgain,
+                            enabled = !state.isChecking,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldAccent,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text("重新检查", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatUpdateBytes(bytes: Long): String {
+    if (bytes <= 0L) return "0 MB"
+    val mb = bytes / (1024.0 * 1024.0)
+    return String.format(java.util.Locale.US, "%.1f MB", mb)
 }

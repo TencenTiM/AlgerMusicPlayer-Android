@@ -8,12 +8,15 @@ import androidx.compose.runtime.Stable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.algermusic.player.AlgerMusicApp
+import com.algermusic.player.BuildConfig
 import com.algermusic.player.data.api.BilibiliService
 import com.algermusic.player.data.api.NeteaseApiClient
 import com.algermusic.player.data.api.QqMusicService
 import com.algermusic.player.data.api.ThirdPartyMusicService
 import com.algermusic.player.data.local.LocalMusicScannerService
 import com.algermusic.player.data.unblock.LxScriptHostService
+import com.algermusic.player.data.update.AppReleaseInfo
+import com.algermusic.player.data.update.UpdateCheckResult
 import com.algermusic.player.model.AlbumItem
 import com.algermusic.player.model.AppSettings
 import com.algermusic.player.model.ArtistItem
@@ -54,6 +57,31 @@ enum class LocalSortMode(val label: String) {
     ARTIST("按歌手"),
     SIZE("按体积"),
     TIME("按修改时间")
+}
+
+@Immutable
+data class AppUpdateUiState(
+    val currentVersion: String = BuildConfig.VERSION_NAME,
+    val isChecking: Boolean = false,
+    val hasChecked: Boolean = false,
+    val isUpToDate: Boolean = false,
+    val latestRelease: AppReleaseInfo? = null,
+    val isDownloading: Boolean = false,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val downloadedApkPath: String? = null,
+    val needsInstallPermissionHint: Boolean = false,
+    val errorMessage: String? = null
+) {
+    val hasUpdate: Boolean
+        get() = latestRelease != null && !isUpToDate
+
+    val downloadProgress: Float
+        get() = if (totalBytes > 0L) {
+            (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
 }
 
 @Immutable
@@ -2784,6 +2812,162 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 qualityBadge = song.playingQualityBadge ?: "飞牛原盘"
             )
             onMessage("已加入下载队列：${song.name}")
+        }
+    }
+
+    // ==================== GitHub 应用内检查更新 ====================
+
+    private val _appUpdate = MutableStateFlow(AppUpdateUiState())
+    val appUpdate: StateFlow<AppUpdateUiState> = _appUpdate.asStateFlow()
+
+    private var updateCheckJob: Job? = null
+    private var updateDownloadJob: Job? = null
+
+    fun checkForAppUpdate() {
+        if (_appUpdate.value.isChecking || _appUpdate.value.isDownloading) return
+        updateCheckJob?.cancel()
+        updateCheckJob = viewModelScope.launch {
+            _appUpdate.update {
+                it.copy(
+                    isChecking = true,
+                    errorMessage = null,
+                    needsInstallPermissionHint = false
+                )
+            }
+            when (val res = container.appUpdateService.checkForUpdate(BuildConfig.VERSION_NAME)) {
+                is UpdateCheckResult.UpdateAvailable -> {
+                    _appUpdate.update {
+                        it.copy(
+                            isChecking = false,
+                            hasChecked = true,
+                            isUpToDate = false,
+                            latestRelease = res.release,
+                            downloadedApkPath = null,
+                            downloadedBytes = 0L,
+                            totalBytes = res.release.apkSizeBytes,
+                            errorMessage = null
+                        )
+                    }
+                }
+                is UpdateCheckResult.UpToDate -> {
+                    _appUpdate.update {
+                        it.copy(
+                            isChecking = false,
+                            hasChecked = true,
+                            isUpToDate = true,
+                            latestRelease = res.latestRelease,
+                            errorMessage = null
+                        )
+                    }
+                }
+                is UpdateCheckResult.Error -> {
+                    _appUpdate.update {
+                        it.copy(
+                            isChecking = false,
+                            hasChecked = true,
+                            errorMessage = res.message
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun startAppUpdateDownload() {
+        val release = _appUpdate.value.latestRelease ?: return
+        if (_appUpdate.value.isDownloading) return
+        updateDownloadJob?.cancel()
+        updateDownloadJob = viewModelScope.launch {
+            _appUpdate.update {
+                it.copy(
+                    isDownloading = true,
+                    downloadedBytes = 0L,
+                    totalBytes = release.apkSizeBytes,
+                    downloadedApkPath = null,
+                    needsInstallPermissionHint = false,
+                    errorMessage = null
+                )
+            }
+            try {
+                val apkFile = container.appUpdateService.downloadApk(release) { downloaded, total ->
+                    _appUpdate.update { state ->
+                        state.copy(
+                            downloadedBytes = downloaded,
+                            totalBytes = total.coerceAtLeast(state.totalBytes)
+                        )
+                    }
+                }
+                _appUpdate.update {
+                    it.copy(
+                        isDownloading = false,
+                        downloadedApkPath = apkFile.absolutePath,
+                        errorMessage = null
+                    )
+                }
+                triggerApkInstall()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _appUpdate.update {
+                    it.copy(
+                        isDownloading = false,
+                        downloadedBytes = 0L
+                    )
+                }
+            } catch (e: Exception) {
+                _appUpdate.update {
+                    it.copy(
+                        isDownloading = false,
+                        errorMessage = e.message?.takeIf { m -> m.isNotBlank() } ?: "APK 下载失败"
+                    )
+                }
+            }
+        }
+    }
+
+    fun cancelAppUpdateDownload() {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        _appUpdate.update {
+            it.copy(
+                isDownloading = false,
+                downloadedBytes = 0L,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun triggerApkInstall(): Boolean {
+        val path = _appUpdate.value.downloadedApkPath ?: return false
+        val apkFile = java.io.File(path)
+        if (!apkFile.exists()) {
+            _appUpdate.update {
+                it.copy(
+                    downloadedApkPath = null,
+                    errorMessage = "安装包缓存已失效，请重新下载"
+                )
+            }
+            return false
+        }
+        val svc = container.appUpdateService
+        return if (!svc.canRequestPackageInstalls()) {
+            _appUpdate.update {
+                it.copy(
+                    needsInstallPermissionHint = true,
+                    errorMessage = null
+                )
+            }
+            runCatching {
+                getApplication<Application>().startActivity(svc.createUnknownSourcesSettingsIntent())
+            }
+            false
+        } else {
+            _appUpdate.update { it.copy(needsInstallPermissionHint = false, errorMessage = null) }
+            runCatching {
+                getApplication<Application>().startActivity(svc.createInstallApkIntent(apkFile))
+                true
+            }.getOrElse { e ->
+                _appUpdate.update { it.copy(errorMessage = "调起系统安装器失败：${e.message}") }
+                false
+            }
         }
     }
 }

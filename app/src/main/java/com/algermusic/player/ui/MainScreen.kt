@@ -178,6 +178,7 @@ fun MainScreen(
     val downloadQualityPickerState by viewModel.downloadQualityPicker.collectAsState()
     val remoteControlState by viewModel.remoteControl.collectAsState()
     val nasState by viewModel.nas.collectAsState()
+    val appUpdateState by viewModel.appUpdate.collectAsState()
     val isDarkTheme = LocalIsDarkTheme.current
 
     var currentTab by rememberSaveable { mutableIntStateOf(0) }
@@ -960,7 +961,12 @@ fun MainScreen(
                             onRealIpSave = { en, ip -> viewModel.setRealIp(en, ip) },
                             onConcurrencyChange = { viewModel.setDownloadConcurrency(it) },
                             onEmbedTagsChange = { viewModel.setEmbedCoverAndLyric(it) },
-                            onSaveLrcChange = { viewModel.setDownloadSaveLrc(it) }
+                            onSaveLrcChange = { viewModel.setDownloadSaveLrc(it) },
+                            appUpdateState = appUpdateState,
+                            onCheckAppUpdate = { viewModel.checkForAppUpdate() },
+                            onStartAppUpdateDownload = { viewModel.startAppUpdateDownload() },
+                            onCancelAppUpdateDownload = { viewModel.cancelAppUpdateDownload() },
+                            onInstallAppUpdate = { viewModel.triggerApkInstall() }
                         )
 
                         SubPage.NeteaseWebLogin, SubPage.QqQuickLogin -> Unit
