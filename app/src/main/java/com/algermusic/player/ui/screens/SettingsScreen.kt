@@ -313,9 +313,25 @@ fun SettingsScreen(
                 }
             )
 
+            val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 36.dp),
+                modifier = Modifier
+                    .then(
+                        if (tabletMetrics.isTablet) {
+                            Modifier
+                                .align(Alignment.CenterHorizontally)
+                                .widthIn(max = tabletMetrics.settingsMaxWidth)
+                                .fillMaxSize()
+                        } else {
+                            Modifier.fillMaxSize()
+                        }
+                    ),
+                contentPadding = PaddingValues(
+                    start = tabletMetrics.horizontalPadding,
+                    end = tabletMetrics.horizontalPadding,
+                    top = 6.dp,
+                    bottom = 36.dp
+                ),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 // 1. 播放行为（NAS 核心播放设置）

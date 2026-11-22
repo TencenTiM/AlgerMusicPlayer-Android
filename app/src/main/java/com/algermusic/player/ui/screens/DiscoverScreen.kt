@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -165,8 +166,20 @@ fun DiscoverScreen(
             )
         }
 
+        val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .then(
+                    if (tabletMetrics.isTablet) {
+                        Modifier
+                            .widthIn(max = tabletMetrics.feedMaxWidth)
+                            .fillMaxSize()
+                            .padding(horizontal = 8.dp)
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
+                ),
             contentPadding = PaddingValues(bottom = 172.dp + navBottomPadding)
         ) {
             // 顶部极简导航栏：左侧 ≡ 抽屉 + 主页标题，右侧液态玻璃圆形搜索按钮

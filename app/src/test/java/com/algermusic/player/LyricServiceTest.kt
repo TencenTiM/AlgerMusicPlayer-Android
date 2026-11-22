@@ -66,4 +66,38 @@ class LyricServiceTest {
         assertEquals(1, parsed.lines.size)
         assertEquals("纯音乐，请欣赏", parsed.lines[0].text)
     }
+
+    @Test
+    fun parseLocalLyric_mergesBilingualDuplicateTimestampsAndSupportsPlainText() {
+        val bilingualLrc = """
+            [00:12.34]Letting go
+            [00:12.34]放手吧
+            [00:18.00]Second line
+        """.trimIndent()
+        val parsed = LyricService.parseLocalLyric("4001", bilingualLrc)!!
+        assertTrue(parsed.hasTranslation)
+        assertEquals(2, parsed.lines.size)
+        assertEquals("Letting go", parsed.lines[0].text)
+        assertEquals("放手吧", parsed.lines[0].translationText)
+
+        val plainLocal = """
+            [ti:十年]
+            第一句纯文本歌词
+            第二句纯文本歌词
+        """.trimIndent()
+        val parsedPlain = LyricService.parseLocalLyric("4002", plainLocal)!!
+        assertEquals(2, parsedPlain.lines.size)
+        assertEquals("第一句纯文本歌词", parsedPlain.lines[0].text)
+        assertEquals("第二句纯文本歌词", parsedPlain.lines[1].text)
+    }
+
+    @Test
+    fun decodeLyricBytes_handlesUtf8BomAndGb18030() {
+        val sample = "[00:01.00]中文歌词测试"
+        val utf8Bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + sample.toByteArray(Charsets.UTF_8)
+        assertEquals(sample, LyricService.decodeLyricBytes(utf8Bom))
+
+        val gbBytes = sample.toByteArray(java.nio.charset.Charset.forName("GB18030"))
+        assertEquals(sample, LyricService.decodeLyricBytes(gbBytes))
+    }
 }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -111,10 +112,17 @@ fun AlgerLiquidGlassBottomSheet(
                 )
         )
 
-        // 厚实磨砂液态玻璃弹窗（更高模糊半径 + 更厚乳白/深灰磨砂层 + 顶部高光描边 + 沉稳阻尼上浮）
+        // 厚实磨砂液态玻璃弹窗（更高模糊半径 + 更厚乳白/深灰磨砂层 + 顶部高光描边 + 沉稳阻尼上浮；平板居中限宽）
+        val tabletMetrics = rememberTabletLayoutMetrics()
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .then(
+                    if (tabletMetrics.isTablet) {
+                        Modifier.widthIn(max = tabletMetrics.sheetMaxWidth).fillMaxWidth()
+                    } else {
+                        Modifier.fillMaxWidth()
+                    }
+                )
                 .graphicsLayer {
                     val slidePx = (1f - progress) * (size.height.coerceAtLeast(480f))
                     translationY = slidePx + dragOffsetY.coerceAtLeast(0f)

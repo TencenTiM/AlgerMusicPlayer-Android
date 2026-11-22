@@ -2,7 +2,9 @@ package com.algermusic.player.data.lyric
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.os.ParcelFileDescriptor
+import androidx.documentfile.provider.DocumentFile
 import com.algermusic.player.data.api.JsonHelper
 import com.algermusic.player.data.api.NeteaseApiClient
 import com.algermusic.player.data.api.NeteaseCrypto
@@ -24,6 +26,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.net.URLEncoder
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import kotlin.math.abs
 
@@ -69,9 +74,29 @@ class LyricService(
                 return createFallbackLyric(songId, "纯音乐，请欣赏")
             }
 
-            val mutableLines = lines.sortedBy { it.startTimeMs }.toMutableList()
+            val sortedLines = lines.sortedBy { it.startTimeMs }
+            val mutableLines = mutableListOf<LyricLine>()
             var hasTranslation = false
             var hasRomaji = false
+
+            // 合并本地双语 LRC 中同一时间戳的原文 + 翻译行（当未单独传入 tlrc 时）
+            if (tlrc.isBlank()) {
+                for (line in sortedLines) {
+                    val prev = mutableLines.lastOrNull()
+                    if (prev != null &&
+                        abs(prev.startTimeMs - line.startTimeMs) < 80.0 &&
+                        prev.translationText.isBlank() &&
+                        line.text != prev.text
+                    ) {
+                        mutableLines[mutableLines.lastIndex] = prev.copy(translationText = line.text)
+                        hasTranslation = true
+                    } else {
+                        mutableLines.add(line)
+                    }
+                }
+            } else {
+                mutableLines.addAll(sortedLines)
+            }
 
             if (tlrc.isNotBlank()) {
                 val transMap = parseLrcLines(tlrc)
@@ -222,6 +247,72 @@ class LyricService(
                 )
             )
         }
+
+        private val LRC_META_TAG_REGEX = Regex("""^\[[a-zA-Z]{1,10}:.*]$""")
+
+        /**
+         * 智能解码本地 .lrc 字节流：支持 UTF-8 BOM / UTF-16LE / UTF-16BE / 严格 UTF-8 / GB18030(GBK)。
+         */
+        fun decodeLyricBytes(bytes: ByteArray): String {
+            if (bytes.isEmpty()) return ""
+            if (bytes.size >= 3 &&
+                bytes[0] == 0xEF.toByte() &&
+                bytes[1] == 0xBB.toByte() &&
+                bytes[2] == 0xBF.toByte()
+            ) {
+                return String(bytes, 3, bytes.size - 3, StandardCharsets.UTF_8)
+            }
+            if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+                return String(bytes, 2, bytes.size - 2, StandardCharsets.UTF_16LE)
+            }
+            if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+                return String(bytes, 2, bytes.size - 2, StandardCharsets.UTF_16BE)
+            }
+            val utf8Attempt = runCatching {
+                val decoder = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                decoder.decode(ByteBuffer.wrap(bytes)).toString()
+            }.getOrNull()
+            if (utf8Attempt != null) return utf8Attempt
+            val gbCharset = runCatching { Charset.forName("GB18030") }
+                .getOrElse { StandardCharsets.UTF_8 }
+            return String(bytes, gbCharset)
+        }
+
+        /**
+         * 解析本地歌词（优先按带时间戳 LRC 解析；若为无时间戳纯文本歌词则转为顺序展示行，绝不误判为“纯音乐”）。
+         */
+        fun parseLocalLyric(songId: String, raw: String): ParsedLyric? {
+            val cleaned = raw.replace("\uFEFF", "").trim()
+            if (cleaned.isBlank()) return null
+
+            val synced = parseLyric(songId, cleaned)
+            val isFallback = synced.lines.size == 1 && synced.lines[0].text == "纯音乐，请欣赏"
+            if (synced.lines.isNotEmpty() && !isFallback) {
+                return synced
+            }
+
+            // 无时间戳纯文本本地歌词兜底
+            val plainLines = cleaned.split('\r', '\n')
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !LRC_META_TAG_REGEX.matches(it) }
+            if (plainLines.isEmpty()) return null
+
+            val items = plainLines.mapIndexed { idx, text ->
+                LyricLine(
+                    index = idx,
+                    startTimeMs = idx * 4_000.0,
+                    durationMs = 4_000.0,
+                    text = text
+                )
+            }
+            return ParsedLyric(
+                songId = songId,
+                rawLrc = cleaned,
+                lines = items
+            )
+        }
     }
 
     suspend fun getParsedLyric(song: SongItem): ParsedLyric = withContext(Dispatchers.IO) {
@@ -229,36 +320,13 @@ class LyricService(
             return@withContext createFallbackLyric("", "暂无播放歌曲")
         }
 
-        // 1. 歌曲对象已携带内嵌歌词
+        // 1. 歌曲对象已携带内嵌歌词（本地优先）
         if (!song.embeddedLyric.isNullOrBlank()) {
-            val parsed = parseLyric(song.id, song.embeddedLyric)
-            if (parsed.lines.isNotEmpty()) return@withContext parsed
+            parseLocalLyric(song.id, song.embeddedLyric)?.let { return@withContext it }
         }
 
-        // 2. 本地音频检查 TagLib 内嵌歌词与同名 .lrc 文件
-        if (!song.localFilePath.isNullOrBlank()) {
-            val file = File(song.localFilePath)
-            if (file.exists()) {
-                val lrcFile = File(file.parentFile, file.nameWithoutExtension + ".lrc")
-                if (lrcFile.exists()) {
-                    val raw = runCatching { lrcFile.readText() }.getOrNull()
-                    if (!raw.isNullOrBlank()) {
-                        return@withContext parseLyric(song.id, raw)
-                    }
-                }
-                readEmbeddedLyricFromFile(file)?.let { embedded ->
-                    val parsed = parseLyric(song.id, embedded)
-                    if (parsed.lines.isNotEmpty()) return@withContext parsed
-                }
-            }
-        }
-
-        if (!song.localContentUri.isNullOrBlank()) {
-            readEmbeddedLyricFromUri(song.localContentUri)?.let { embedded ->
-                val parsed = parseLyric(song.id, embedded)
-                if (parsed.lines.isNotEmpty()) return@withContext parsed
-            }
-        }
+        // 2. 本地歌词优先匹配：同名/同目录 .lrc -> 音频文件内嵌标签 -> SAF 目录同名 .lrc -> 已下载/本地歌词目录匹配
+        resolveLocalLyric(song)?.let { return@withContext it }
 
         // 2.2 NAS 私有云（飞牛OS / WebDAV / Subsonic）同目录 .lrc 或服务端结构化歌词
         if (song.source.equals("nas", ignoreCase = true) && nasMusicService != null) {
@@ -350,12 +418,203 @@ class LyricService(
         tryFetchLrcLib(song) ?: parsed
     }
 
+    private suspend fun resolveLocalLyric(song: SongItem): ParsedLyric? {
+        val candidateBaseNames = buildLocalLyricBaseNames(song)
+
+        // 2.1 本地文件路径：优先同目录同名 .lrc（支持 GBK/UTF-16/UTF-8），其次内嵌 TagLib 歌词
+        if (!song.localFilePath.isNullOrBlank()) {
+            val file = File(song.localFilePath)
+            val parent = file.parentFile
+            if (parent != null && parent.exists() && parent.isDirectory) {
+                findMatchingLrcInDirectory(parent, listOf(file.nameWithoutExtension) + candidateBaseNames)?.let { raw ->
+                    parseLocalLyric(song.id, raw)?.let { return it }
+                }
+            }
+            if (file.exists()) {
+                readEmbeddedLyricFromFile(file)?.let { embedded ->
+                    parseLocalLyric(song.id, embedded)?.let { return it }
+                }
+            }
+        }
+
+        // 2.2 SAF localContentUri：先找同目录/已授权 SAF 树中的同名 .lrc，再读音频内嵌歌词
+        if (!song.localContentUri.isNullOrBlank()) {
+            readSiblingLrcFromSafTrees(song.localContentUri, candidateBaseNames)?.let { raw ->
+                parseLocalLyric(song.id, raw)?.let { return it }
+            }
+            readEmbeddedLyricFromUri(song.localContentUri)?.let { embedded ->
+                parseLocalLyric(song.id, embedded)?.let { return it }
+            }
+        }
+
+        // 2.3 若该在线曲目已在本地下载完成，优先读取其本地 .lrc 或内嵌歌词
+        val downloaded = runCatching {
+            settingsRepo.loadCompletedDownloads().firstOrNull { it.songId == song.id }
+        }.getOrNull()
+        if (downloaded != null) {
+            if (downloaded.filePath.isNotBlank()) {
+                val dlFile = File(downloaded.filePath)
+                dlFile.parentFile?.takeIf { it.exists() && it.isDirectory }?.let { dir ->
+                    findMatchingLrcInDirectory(dir, listOf(dlFile.nameWithoutExtension) + candidateBaseNames)?.let { raw ->
+                        parseLocalLyric(song.id, raw)?.let { return it }
+                    }
+                }
+                if (dlFile.exists()) {
+                    readEmbeddedLyricFromFile(dlFile)?.let { embedded ->
+                        parseLocalLyric(song.id, embedded)?.let { return it }
+                    }
+                }
+            }
+            if (downloaded.contentUri.isNotBlank()) {
+                readEmbeddedLyricFromUri(downloaded.contentUri)?.let { embedded ->
+                    parseLocalLyric(song.id, embedded)?.let { return it }
+                }
+            }
+        }
+
+        // 2.4 通用本地歌词目录（Music/AlgerMusicPlayer、Music/Lyrics、Music、Download/Lyrics）匹配 .lrc
+        if (candidateBaseNames.isNotEmpty()) {
+            val musicRoot = runCatching {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+            }.getOrNull()
+            val downloadRoot = runCatching {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            }.getOrNull()
+            val searchDirs = listOfNotNull(
+                musicRoot?.let { File(it, "AlgerMusicPlayer") },
+                musicRoot?.let { File(it, "Lyrics") },
+                musicRoot,
+                downloadRoot?.let { File(it, "Lyrics") }
+            ).filter { it.exists() && it.isDirectory }
+            for (dir in searchDirs) {
+                findMatchingLrcInDirectory(dir, candidateBaseNames)?.let { raw ->
+                    parseLocalLyric(song.id, raw)?.let { return it }
+                }
+            }
+        }
+
+        return null
+    }
+
+    private fun buildLocalLyricBaseNames(song: SongItem): List<String> {
+        val title = sanitizeFileName(song.name)
+        if (title.isBlank()) return emptyList()
+        val artist = sanitizeFileName(
+            song.artistText
+                .replace("未知歌手", "")
+                .replace("Unknown Artist", "", ignoreCase = true)
+                .trim()
+        )
+        val firstArtist = sanitizeFileName(
+            song.artists.firstOrNull()?.name
+                ?.replace("未知歌手", "")
+                ?.replace("Unknown Artist", "", ignoreCase = true)
+                ?.trim()
+                .orEmpty()
+        )
+        val set = LinkedHashSet<String>()
+        if (artist.isNotBlank()) {
+            set.add("$title - $artist")
+            set.add("$artist - $title")
+            set.add("${title}-${artist}")
+            set.add("${artist}-${title}")
+        }
+        if (firstArtist.isNotBlank() && firstArtist != artist) {
+            set.add("$title - $firstArtist")
+            set.add("$firstArtist - $title")
+        }
+        set.add(title)
+        return set.toList()
+    }
+
+    private fun sanitizeFileName(raw: String): String {
+        return raw.replace(Regex("""[\\/:*?"<>|]"""), "_").trim()
+    }
+
+    private fun findMatchingLrcInDirectory(dir: File, baseNames: List<String>): String? {
+        if (baseNames.isEmpty()) return null
+        // 快速精确路径命中
+        for (base in baseNames) {
+            if (base.isBlank()) continue
+            val direct = File(dir, "$base.lrc")
+            if (direct.exists() && direct.isFile) {
+                val text = runCatching { decodeLyricBytes(direct.readBytes()) }.getOrNull()
+                if (!text.isNullOrBlank()) return text
+            }
+        }
+        // 大小写不敏感匹配（兼容 .LRC / 空格差异）
+        val wantedLower = baseNames.filter { it.isNotBlank() }.map { "${it.lowercase()}.lrc" }.toSet()
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return null
+        val matched = files.firstOrNull { f ->
+            f.isFile && f.name.lowercase() in wantedLower
+        } ?: return null
+        return runCatching { decodeLyricBytes(matched.readBytes()) }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun readSiblingLrcFromSafTrees(audioContentUri: String, candidateBaseNames: List<String>): String? {
+        val treeUris = settingsRepo.currentSettings.localTreeUris
+        if (treeUris.isEmpty()) return null
+        val audioDocName = runCatching {
+            DocumentFile.fromSingleUri(context, Uri.parse(audioContentUri))?.name
+        }.getOrNull()
+        val audioBase = audioDocName?.substringBeforeLast('.', "")?.trim().orEmpty()
+        val wantedLower = (listOf(audioBase) + candidateBaseNames)
+            .filter { it.isNotBlank() }
+            .map { "${it.lowercase()}.lrc" }
+            .toSet()
+        if (wantedLower.isEmpty()) return null
+
+        for (treeStr in treeUris) {
+            val root = runCatching { DocumentFile.fromTreeUri(context, Uri.parse(treeStr)) }.getOrNull()
+                ?: continue
+            val found = findLrcDocInSafDir(root, wantedLower, maxDepth = 2)
+            if (found != null) {
+                val raw = runCatching {
+                    context.contentResolver.openInputStream(found.uri)?.use { decodeLyricBytes(it.readBytes()) }
+                }.getOrNull()
+                if (!raw.isNullOrBlank()) return raw
+            }
+        }
+        return null
+    }
+
+    private fun findLrcDocInSafDir(dir: DocumentFile, wantedLower: Set<String>, maxDepth: Int): DocumentFile? {
+        val children = runCatching { dir.listFiles() }.getOrNull() ?: return null
+        for (child in children) {
+            val name = child.name?.lowercase() ?: continue
+            if (child.isFile && name in wantedLower) return child
+        }
+        if (maxDepth <= 0) return null
+        for (child in children) {
+            if (child.isDirectory) {
+                val hit = findLrcDocInSafDir(child, wantedLower, maxDepth - 1)
+                if (hit != null) return hit
+            }
+        }
+        return null
+    }
+
+    private fun extractEmbeddedLyricFromPropertyMap(propertyMap: Map<String, Array<String>>?): String? {
+        if (propertyMap.isNullOrEmpty()) return null
+        val preferredKeys = listOf("LYRICS", "UNSYNCEDLYRICS", "SYNCEDLYRICS", "LYRIC", "USLT", "SYLT", "©LYR")
+        for (key in preferredKeys) {
+            val direct = propertyMap[key]?.firstOrNull { it.isNotBlank() }
+            if (!direct.isNullOrBlank()) {
+                return LocalMusicScannerService.repairLegacyChineseText(direct).takeIf { it.isNotBlank() }
+            }
+        }
+        val fuzzy = propertyMap.entries.firstOrNull { (k, v) ->
+            val upper = k.uppercase()
+            (upper.contains("LYRIC") || upper.contains("USLT") || upper.contains("SYLT")) &&
+                v.any { it.isNotBlank() }
+        }?.value?.firstOrNull { it.isNotBlank() }
+        return LocalMusicScannerService.repairLegacyChineseText(fuzzy).takeIf { it.isNotBlank() }
+    }
+
     private fun readEmbeddedLyricFromFile(file: File): String? = runCatching {
         ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
             val meta = TagLib.getMetadata(pfd.dup().detachFd(), readPictures = false)
-            val raw = meta?.propertyMap?.get("LYRICS")?.firstOrNull()
-                ?: meta?.propertyMap?.get("UNSYNCEDLYRICS")?.firstOrNull()
-            LocalMusicScannerService.repairLegacyChineseText(raw).takeIf { it.isNotBlank() }
+            extractEmbeddedLyricFromPropertyMap(meta?.propertyMap)
         }
     }.getOrNull()
 
@@ -363,9 +622,7 @@ class LyricService(
         val uri = Uri.parse(uriStr)
         context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
             val meta = TagLib.getMetadata(pfd.dup().detachFd(), readPictures = false)
-            val raw = meta?.propertyMap?.get("LYRICS")?.firstOrNull()
-                ?: meta?.propertyMap?.get("UNSYNCEDLYRICS")?.firstOrNull()
-            LocalMusicScannerService.repairLegacyChineseText(raw).takeIf { it.isNotBlank() }
+            extractEmbeddedLyricFromPropertyMap(meta?.propertyMap)
         }
     }.getOrNull()
 

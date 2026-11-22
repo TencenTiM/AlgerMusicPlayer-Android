@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
@@ -1155,11 +1156,18 @@ fun MainScreen(
                 }
                     }
 
-                    // 层 2：悬浮在主内容之上的液态玻璃底栏区域（兄弟节点，严禁放进层 1 内）
+                    // 层 2：悬浮在主内容之上的液态玻璃底栏区域（兄弟节点，严禁放进层 1 内；平板端居中限宽悬浮）
+                    val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
+                            .then(
+                                if (tabletMetrics.isTablet) {
+                                    Modifier.widthIn(max = tabletMetrics.dockMaxWidth).fillMaxWidth()
+                                } else {
+                                    Modifier.fillMaxWidth()
+                                }
+                            )
                             .navigationBarsPadding()
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)

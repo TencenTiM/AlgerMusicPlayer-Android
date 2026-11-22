@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -265,6 +266,8 @@ internal fun IosAppleMusicPlayerLayout(
     var headerMoreRect by remember { mutableStateOf(Rect.Zero) }
     var horizDrag by remember { mutableFloatStateOf(0f) }
 
+    val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -272,7 +275,16 @@ internal fun IosAppleMusicPlayerLayout(
     ) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .align(Alignment.Center)
+                .then(
+                    if (tabletMetrics.isTablet) {
+                        Modifier
+                            .widthIn(max = if (tabletMetrics.isTabletLandscape) 580.dp else 520.dp)
+                            .fillMaxSize()
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
+                )
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 24.dp),

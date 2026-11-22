@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -155,10 +156,25 @@ fun LibraryScreen(
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val navBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 172.dp + navBottomPadding)
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .then(
+                if (tabletMetrics.isTablet) {
+                    Modifier.widthIn(max = tabletMetrics.feedMaxWidth).fillMaxSize()
+                } else {
+                    Modifier.fillMaxSize()
+                }
+            ),
+        contentPadding = PaddingValues(
+            start = tabletMetrics.horizontalPadding,
+            end = tabletMetrics.horizontalPadding,
+            top = 6.dp,
+            bottom = 172.dp + navBottomPadding
+        )
     ) {
         // 顶部极简导航：左抽屉入口 + 大号「我的」标题（已去除重复齿轮设置按钮）
         item(key = "lib_header") {
@@ -590,6 +606,7 @@ fun LibraryScreen(
                 )
             }
         }
+    }
     }
 }
 

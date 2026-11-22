@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -564,9 +565,19 @@ fun PlayerScreen(
                 onOpenPlayerStyleGallery = onOpenPlayerStyleGallery
             )
         } else {
+        val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .align(Alignment.Center)
+                .then(
+                    if (tabletMetrics.isTablet) {
+                        Modifier
+                            .widthIn(max = if (tabletMetrics.isTabletLandscape) 660.dp else tabletMetrics.portraitPlayerMaxWidth)
+                            .fillMaxSize()
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
+                )
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 22.dp, vertical = 10.dp),
@@ -1343,21 +1354,20 @@ private fun PlayerModeLiquidGlassToggle(
 
 @Composable
 private fun PlayerAmbientOrbsCanvas(
-    peakLevelFlow: StateFlow<Float>,
+    @Suppress("UNUSED_PARAMETER") peakLevelFlow: StateFlow<Float>,
     orbAccent: Color,
     topGlow: Color,
     bottomGlow: Color,
     isDarkTheme: Boolean
 ) {
-    val peakState = peakLevelFlow.collectAsState()
+    // 静态柔和三色封面氛围光斑：不随高频音频峰值闪烁，保持与 Apple Music 一致的沉稳通透质感且零逐帧重绘开销
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
-        val boost = (peakState.value * 0.18f).coerceIn(0f, 0.16f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    orbAccent.copy(alpha = (if (isDarkTheme) 0.34f else 0.36f) + boost),
+                    orbAccent.copy(alpha = if (isDarkTheme) 0.34f else 0.36f),
                     Color.Transparent
                 ),
                 center = Offset(w * 0.22f, h * 0.20f),
@@ -1369,7 +1379,7 @@ private fun PlayerAmbientOrbsCanvas(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    topGlow.copy(alpha = (if (isDarkTheme) 0.28f else 0.24f) + boost * 0.7f),
+                    topGlow.copy(alpha = if (isDarkTheme) 0.28f else 0.24f),
                     Color.Transparent
                 ),
                 center = Offset(w * 0.86f, h * 0.34f),
@@ -1381,7 +1391,7 @@ private fun PlayerAmbientOrbsCanvas(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    bottomGlow.copy(alpha = (if (isDarkTheme) 0.42f else 0.32f) + boost),
+                    bottomGlow.copy(alpha = if (isDarkTheme) 0.42f else 0.32f),
                     Color.Transparent
                 ),
                 center = Offset(w * 0.76f, h * 0.82f),
