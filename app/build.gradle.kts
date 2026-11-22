@@ -13,8 +13,8 @@ android {
         applicationId = "com.algermusic.player"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.12"
+        versionCode = 5
+        versionName = "1.0.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

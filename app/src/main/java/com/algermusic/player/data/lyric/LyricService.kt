@@ -166,7 +166,18 @@ class LyricService(
                 } else {
                     5000.0
                 }
-                line.copy(index = idx, durationMs = dur)
+                val base = line.copy(index = idx, durationMs = dur)
+                if (base.translationText.isBlank()) {
+                    val split = splitInlineEnglishAndChineseTranslation(base.text)
+                    if (split != null) {
+                        hasTranslation = true
+                        base.copy(text = split.first, translationText = split.second, words = emptyList())
+                    } else {
+                        base
+                    }
+                } else {
+                    base
+                }
             }
 
             return ParsedLyric(
@@ -845,35 +856,97 @@ class LyricService(
         }
 
         /**
-         * 解析本地歌词（优先按带时间戳 LRC 解析；若为无时间戳纯文本歌词则转为顺序展示行，绝不误判为“纯音乐”）。
+         * 自动拆分“英文原句 + 空格/分隔符 + 中文翻译”写在同一行的双语歌词，
+         * 让中文翻译另起一行以小字号显示在英文下方，同时避免误拆中英混杂的华语流行句（如 "Baby 你好"）。
+         */
+        fun splitInlineEnglishAndChineseTranslation(rawLine: String): Pair<String, String>? {
+            val trimmed = rawLine.trim()
+            if (trimmed.length < 10) return null
+            // 找到第一个汉字位置
+            val firstCjkIdx = trimmed.indexOfFirst { it in '\u4E00'..'\u9FFF' }
+            if (firstCjkIdx <= 0) return null
+
+            val rawPrefix = trimmed.substring(0, firstCjkIdx)
+            val rawSuffix = trimmed.substring(firstCjkIdx).trim()
+            if (rawSuffix.isBlank()) return null
+
+            // 前缀末尾必须有空白或明确分隔符（/ | —）
+            val trimmedPrefixEnd = rawPrefix.trimEnd()
+            val hadSeparator = trimmedPrefixEnd.length < rawPrefix.length ||
+                trimmedPrefixEnd.endsWith("/") ||
+                trimmedPrefixEnd.endsWith("|") ||
+                trimmedPrefixEnd.endsWith("—")
+            if (!hadSeparator) return null
+
+            val englishPart = trimmedPrefixEnd.trimEnd('/', '|', '—', ' ').trim()
+            if (englishPart.isBlank()) return null
+
+            // 统计英文前缀中的单词数与拉丁字母数
+            val englishWords = Regex("""[A-Za-z]+(?:'[A-Za-z]+)?""").findAll(englishPart).count()
+            val latinChars = englishPart.count { it in 'A'..'Z' || it in 'a'..'z' }
+            val cjkChars = rawSuffix.count { it in '\u4E00'..'\u9FFF' }
+            val suffixLatinWords = Regex("""[A-Za-z]{2,}""").findAll(rawSuffix).count()
+
+            val explicitDelimiter = rawPrefix.contains("  ") || rawPrefix.contains("/") || rawPrefix.contains("|")
+            val enoughEnglish = if (explicitDelimiter) {
+                englishWords >= 2 && latinChars >= 6
+            } else {
+                englishWords >= 3 && latinChars >= 10
+            }
+            val enoughChinese = if (explicitDelimiter) cjkChars >= 2 else cjkChars >= 4
+            // 若中文后半段仍夹杂大量英文句子，则视为歌词本身中英混唱而不拆
+            if (!enoughEnglish || !enoughChinese || suffixLatinWords >= 3) return null
+
+            return englishPart to rawSuffix
+        }
+
+        /**
+         * 解析本地歌词（优先按所有带时间戳格式解析；若为无时间戳纯文本歌词则剥离残留时间标签后转为顺序展示行）。
          */
         fun parseLocalLyric(songId: String, raw: String): ParsedLyric? {
             val cleaned = raw.replace("\uFEFF", "").trim()
             if (cleaned.isBlank()) return null
 
-            val synced = parseLyric(songId, cleaned)
-            val isFallback = synced.lines.size == 1 && synced.lines[0].text == "纯音乐，请欣赏"
-            if (synced.lines.isNotEmpty() && !isFallback) {
-                return synced
+            val timedLines = parseAnyTimedLyricFormat(cleaned).first
+            if (timedLines.isNotEmpty()) {
+                return parseLyric(songId, cleaned)
             }
 
-            // 无时间戳纯文本本地歌词兜底
+            // 无时间戳纯文本本地歌词兜底（强制剥离任何残留时间标签，绝不在画面露出 [00:xx.xxx]）
             val plainLines = cleaned.split('\r', '\n')
-                .map { it.trim() }
+                .map { line ->
+                    line.replace(INLINE_WORD_TIME_REGEX, "")
+                        .replace(LRC_TIME_REGEX, "")
+                        .trim()
+                }
                 .filter { it.isNotBlank() && !LRC_META_TAG_REGEX.matches(it) }
             if (plainLines.isEmpty()) return null
 
+            var hasTranslation = false
             val items = plainLines.mapIndexed { idx, text ->
-                LyricLine(
-                    index = idx,
-                    startTimeMs = idx * 4_000.0,
-                    durationMs = 4_000.0,
-                    text = text
-                )
+                val split = splitInlineEnglishAndChineseTranslation(text)
+                if (split != null) {
+                    hasTranslation = true
+                    LyricLine(
+                        index = idx,
+                        startTimeMs = idx * 4_000.0,
+                        durationMs = 4_000.0,
+                        text = split.first,
+                        translationText = split.second
+                    )
+                } else {
+                    LyricLine(
+                        index = idx,
+                        startTimeMs = idx * 4_000.0,
+                        durationMs = 4_000.0,
+                        text = text
+                    )
+                }
             }
             return ParsedLyric(
                 songId = songId,
                 rawLrc = cleaned,
+                hasTranslation = hasTranslation,
                 lines = items
             )
         }
@@ -909,7 +982,7 @@ class LyricService(
                 if (qqCacheFile.exists()) {
                     runCatching {
                         val cached = JsonHelper.tolerantJson.decodeFromString<ParsedLyric>(qqCacheFile.readText())
-                        if (cached.lines.isNotEmpty()) return@withContext cached
+                        if (cached.lines.isNotEmpty()) return@withContext postProcessCachedLyric(cached)
                     }
                 }
                 val (qqLrc, qqTrans) = qqMusicService.getLyric(mid)
@@ -965,7 +1038,7 @@ class LyricService(
         if (cacheFile.exists()) {
             runCatching {
                 val cached = JsonHelper.tolerantJson.decodeFromString<ParsedLyric>(cacheFile.readText())
-                if (cached.lines.isNotEmpty()) return@withContext cached
+                if (cached.lines.isNotEmpty()) return@withContext postProcessCachedLyric(cached)
             }
         }
 
@@ -980,6 +1053,28 @@ class LyricService(
         }
 
         tryFetchLrcLib(song) ?: parsed
+    }
+
+    private fun postProcessCachedLyric(cached: ParsedLyric): ParsedLyric {
+        var changed = false
+        var hasTrans = cached.hasTranslation
+        val cleaned = cached.lines.map { line ->
+            var cur = line
+            if (INLINE_WORD_TIME_REGEX.containsMatchIn(cur.text)) {
+                cur = cur.copy(text = cur.text.replace(INLINE_WORD_TIME_REGEX, "").trim())
+                changed = true
+            }
+            if (cur.translationText.isBlank()) {
+                val split = splitInlineEnglishAndChineseTranslation(cur.text)
+                if (split != null) {
+                    cur = cur.copy(text = split.first, translationText = split.second, words = emptyList())
+                    hasTrans = true
+                    changed = true
+                }
+            }
+            cur
+        }
+        return if (changed) cached.copy(lines = cleaned, hasTranslation = hasTrans) else cached
     }
 
     private suspend fun resolveLocalLyric(song: SongItem): ParsedLyric? {

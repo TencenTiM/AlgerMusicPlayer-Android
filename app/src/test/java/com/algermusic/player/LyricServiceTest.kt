@@ -174,4 +174,32 @@ class LyricServiceTest {
         assertEquals("梦醒时分", parsedAss.lines[0].text)
         assertEquals("When I wake up", parsedAss.lines[0].translationText)
     }
+
+    @Test
+    fun parseLocalLyric_keepsSingleLinePureMusicCleanAndSplitsInlineEnglishTranslation() {
+        // 真实复现：单行逐字 LRC 内容恰好为「纯音乐，请欣赏」时绝不能退回纯文本露出时间戳
+        val pureMusicWordLrc =
+            "[00:01.589]纯[00:01.943]音[00:02.448]乐[00:02.854]，[00:03.158]请[00:03.410]欣[00:03.815]赏[00:04.118]"
+        val parsedPure = LyricService.parseLocalLyric("7001", pureMusicWordLrc)!!
+        assertTrue(parsedPure.hasWordByWord)
+        assertEquals(1, parsedPure.lines.size)
+        assertEquals("纯音乐，请欣赏", parsedPure.lines[0].text)
+        assertFalse(parsedPure.lines[0].text.contains("["))
+
+        // 真实复现：英文与中文翻译写在同一行时自动拆分为主行 + 下方翻译行
+        val inlineBilingual = """
+            [00:38.00]You will know how much I love you 你会知道我对你的爱多深
+            [00:43.00](this)ties will never broke again 联系才会不朽
+            [00:48.00]Baby 你好
+        """.trimIndent()
+        val parsedBi = LyricService.parseLocalLyric("7002", inlineBilingual)!!
+        assertTrue(parsedBi.hasTranslation)
+        assertEquals("You will know how much I love you", parsedBi.lines[0].text)
+        assertEquals("你会知道我对你的爱多深", parsedBi.lines[0].translationText)
+        assertEquals("(this)ties will never broke again", parsedBi.lines[1].text)
+        assertEquals("联系才会不朽", parsedBi.lines[1].translationText)
+        // 短词混唱不误拆
+        assertEquals("Baby 你好", parsedBi.lines[2].text)
+        assertEquals("", parsedBi.lines[2].translationText)
+    }
 }
