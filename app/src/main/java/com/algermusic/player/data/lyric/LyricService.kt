@@ -45,6 +45,7 @@ class LyricService(
 ) {
     companion object {
         private val LRC_TIME_REGEX = Regex("""\[(\d{1,3}):(\d{1,2})(?:\.(\d{1,3}))?]""")
+        private val INLINE_WORD_TIME_REGEX = Regex("""[\[<](\d{1,3}):(\d{1,2})(?:\.(\d{1,3}))?[\]>]""")
         private val YRC_LINE_REGEX = Regex("""^\[(\d+),(\d+)](.*)$""")
         private val YRC_WORD_REGEX = Regex("""\((\d+),(\d+),\d+\)([^\(\r\n]*)""")
 
@@ -68,6 +69,9 @@ class LyricService(
 
             if (lines.isEmpty() && lrc.isNotBlank()) {
                 lines = parseLrcLines(lrc)
+                if (lines.any { it.words.isNotEmpty() }) {
+                    hasWordByWord = true
+                }
             }
 
             if (lines.isEmpty()) {
@@ -152,28 +156,95 @@ class LyricService(
             )
         }
 
+        private fun parseTimeTagMs(match: MatchResult): Double? {
+            val min = match.groupValues[1].toIntOrNull() ?: return null
+            val sec = match.groupValues[2].toIntOrNull() ?: return null
+            val frac = match.groupValues[3]
+            val ms = when {
+                frac.isEmpty() -> 0
+                frac.length == 1 -> (frac.toIntOrNull() ?: 0) * 100
+                frac.length == 2 -> (frac.toIntOrNull() ?: 0) * 10
+                else -> frac.substring(0, 3).toIntOrNull() ?: 0
+            }
+            return (min * 60 + sec) * 1000.0 + ms
+        }
+
         private fun parseLrcLines(lrcText: String): List<LyricLine> {
             val list = mutableListOf<LyricLine>()
             val rawLines = lrcText.split('\r', '\n').filter { it.isNotBlank() }
 
             for (raw in rawLines) {
-                val matches = LRC_TIME_REGEX.findAll(raw).toList()
+                val trimmed = raw.trim()
+                val allTags = INLINE_WORD_TIME_REGEX.findAll(trimmed).toList()
+                if (allTags.isEmpty()) continue
+
+                // 判断是否为逐字 LRC（如 [00:23.560]眼[00:23.880]睛...[00:26.700] 或 <00:23.560>眼<00:23.880>睛）
+                // 特征：任意两个时间标签之间存在非空歌词文字，或包含尖括号增强时间标签
+                val hasTextBetweenTags = (0 until allTags.lastIndex).any { idx ->
+                    val between = trimmed.substring(allTags[idx].range.last + 1, allTags[idx + 1].range.first)
+                    between.isNotBlank()
+                }
+                val hasAngleTag = allTags.any { it.value.startsWith("<") }
+
+                if (hasTextBetweenTags || hasAngleTag) {
+                    val words = mutableListOf<LyricWord>()
+                    var firstStartMs = -1.0
+                    var lastTagMs = -1.0
+
+                    for (idx in allTags.indices) {
+                        val tagStartMs = parseTimeTagMs(allTags[idx]) ?: continue
+                        if (firstStartMs < 0.0) firstStartMs = tagStartMs
+                        lastTagMs = tagStartMs
+
+                        val segStart = allTags[idx].range.last + 1
+                        val segEnd = if (idx < allTags.lastIndex) allTags[idx + 1].range.first else trimmed.length
+                        val segText = trimmed.substring(segStart, segEnd)
+                        if (segText.isEmpty()) continue
+
+                        val nextMs = if (idx < allTags.lastIndex) {
+                            parseTimeTagMs(allTags[idx + 1]) ?: (tagStartMs + 300.0)
+                        } else {
+                            tagStartMs + 400.0
+                        }
+                        val wordDur = (nextMs - tagStartMs).coerceAtLeast(80.0)
+                        words.add(
+                            LyricWord(
+                                text = segText,
+                                startTimeMs = tagStartMs,
+                                durationMs = wordDur
+                            )
+                        )
+                    }
+
+                    val fullText = words.joinToString("") { it.text }.trim()
+                    if (fullText.isBlank() || firstStartMs < 0.0) continue
+                    val lineDuration = if (lastTagMs > firstStartMs) {
+                        (lastTagMs - firstStartMs).coerceAtLeast(300.0)
+                    } else {
+                        0.0
+                    }
+                    list.add(
+                        LyricLine(
+                            startTimeMs = firstStartMs,
+                            durationMs = lineDuration,
+                            text = fullText,
+                            words = words
+                        )
+                    )
+                    continue
+                }
+
+                // 标准 LRC 行（支持行首多时间戳复唱：[00:10.50][01:20.00]Hello World）
+                val matches = LRC_TIME_REGEX.findAll(trimmed).toList()
                 if (matches.isEmpty()) continue
                 val lastMatch = matches.last()
-                val content = raw.substring(lastMatch.range.last + 1).trim()
+                val content = trimmed.substring(lastMatch.range.last + 1)
+                    .replace(INLINE_WORD_TIME_REGEX, "")
+                    .trim()
                 if (content.isBlank()) continue
 
                 for (m in matches) {
-                    val min = m.groupValues[1].toIntOrNull() ?: continue
-                    val sec = m.groupValues[2].toIntOrNull() ?: continue
-                    val frac = m.groupValues[3]
-                    val ms = when {
-                        frac.isEmpty() -> 0
-                        frac.length == 1 -> (frac.toIntOrNull() ?: 0) * 100
-                        frac.length == 2 -> (frac.toIntOrNull() ?: 0) * 10
-                        else -> frac.substring(0, 3).toIntOrNull() ?: 0
-                    }
-                    val totalMs = (min * 60 + sec) * 1000.0 + ms
+                    val totalMs = parseTimeTagMs(m) ?: continue
                     list.add(LyricLine(startTimeMs = totalMs, text = content))
                 }
             }

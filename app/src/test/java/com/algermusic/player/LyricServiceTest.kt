@@ -100,4 +100,23 @@ class LyricServiceTest {
         val gbBytes = sample.toByteArray(java.nio.charset.Charset.forName("GB18030"))
         assertEquals(sample, LyricService.decodeLyricBytes(gbBytes))
     }
+
+    @Test
+    fun parseLocalLyric_parsesInlineWordByWordLrcWithoutShowingTimestamps() {
+        val wordByWordLrc = """
+            [00:01.035]词[00:01.171]：[00:01.171]沈[00:01.307]以[00:01.443]诚[00:01.579]
+            [00:23.560]眼[00:23.880]睛[00:24.180]多[00:24.620]么[00:25.050]闪[00:25.860]又[00:26.250]亮[00:26.700]
+            [00:30.000]<00:30.000>星<00:30.500>辰<00:31.000>大<00:31.500>海
+        """.trimIndent()
+
+        val parsed = LyricService.parseLocalLyric("5001", wordByWordLrc)!!
+        assertTrue(parsed.hasWordByWord)
+        assertEquals(3, parsed.lines.size)
+        assertEquals("词：沈以诚", parsed.lines[0].text)
+        assertEquals("眼睛多么闪又亮", parsed.lines[1].text)
+        assertEquals("星辰大海", parsed.lines[2].text)
+        assertEquals(23560.0, parsed.lines[1].startTimeMs, 1.0)
+        assertEquals(7, parsed.lines[1].words.size)
+        assertFalse(parsed.lines.any { it.text.contains("[") || it.text.contains("<") })
+    }
 }
