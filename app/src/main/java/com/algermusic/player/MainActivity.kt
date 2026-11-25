@@ -68,9 +68,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) {
-            openPlayerSignal++
-        }
+        handleIncomingIntent(intent)
 
         setContent {
             val settings by viewModel.settingsFlow.collectAsState()
@@ -90,7 +88,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
         if (intent.getBooleanExtra(EXTRA_OPEN_PLAYER, false)) {
+            openPlayerSignal++
+        }
+        if (intent.action == Intent.ACTION_VIEW) {
+            val uri = intent.data ?: return
+            viewModel.playExternalAudioUri(uri)
             openPlayerSignal++
         }
     }

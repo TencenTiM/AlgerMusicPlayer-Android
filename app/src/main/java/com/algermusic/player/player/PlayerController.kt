@@ -20,6 +20,7 @@ import com.algermusic.player.data.api.ThirdPartyMusicService
 import com.algermusic.player.data.local.SettingsRepository
 import com.algermusic.player.data.lyric.LyricService
 import com.algermusic.player.data.unblock.UnblockMusicService
+import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.EqualizerConfig
 import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.ParsedLyric
@@ -960,12 +961,19 @@ class PlayerController(
             }
             if (!localUri.isNullOrBlank()) {
                 val badge = song.playingQualityBadge?.takeIf { it.isNotBlank() } ?: "本地音频"
+                val ext = AudioFormatSupport.extractExtension(song.localFilePath ?: song.localContentUri)
+                val level = song.playingQualityLevel?.takeIf { it.isNotBlank() } ?: when {
+                    AudioFormatSupport.isHiResExtension(ext) -> MusicQualityLevel.HIRES
+                    AudioFormatSupport.isLosslessExtension(ext) -> MusicQualityLevel.LOSSLESS
+                    AudioFormatSupport.isHighQualityLossyExtension(ext) -> MusicQualityLevel.EXHIGH
+                    else -> MusicQualityLevel.STANDARD
+                }
                 return StreamResolution(
                     ResolvedPlayableStream(
                         url = localUri,
                         platform = "local",
                         qualityBadge = badge,
-                        qualityLevel = MusicQualityLevel.LOSSLESS,
+                        qualityLevel = level,
                         bitrateKbps = song.playingBitrateKbps,
                         sizeBytes = song.fileSize,
                         localFilePath = song.localFilePath,
@@ -1589,15 +1597,10 @@ class PlayerController(
         ) {
             return
         }
-        val badgeUpper = resolved.qualityBadge.uppercase()
-        val extHint = when {
-            badgeUpper.contains("WAV") -> ".wav"
-            badgeUpper.contains("MP3") -> ".mp3"
-            badgeUpper.contains("M4A") || badgeUpper.contains("AAC") -> ".m4a"
-            badgeUpper.contains("OGG") -> ".ogg"
-            badgeUpper.contains("APE") -> ".ape"
-            else -> ".flac"
-        }
+        val extHint = AudioFormatSupport.extensionHintFromBadgeOrPath(
+            badge = resolved.qualityBadge,
+            path = song.nasVirtualPath ?: song.nasFilePath
+        )
         nasPlayBehaviorJob = scope.launch(Dispatchers.IO) {
             if (netMode == com.algermusic.player.model.NasNetworkPlayMode.DOWNLOAD_PLAY) {
                 if (cacheMode == com.algermusic.player.model.NasCacheWhilePlayingMode.NO_CACHE) {
@@ -1918,9 +1921,10 @@ class PlayerController(
         val estKbps = if (matched.fileSize > 0L && durMs > 0L) {
             ((matched.fileSize * 8L) / durMs).toInt().coerceIn(64, 4800)
         } else 0
-        val extHint = matched.filename.ifBlank { matched.filePath }.lowercase()
+        val extHint = AudioFormatSupport.extractExtension(matched.filename.ifBlank { matched.filePath })
         val level = when {
-            extHint.endsWith(".flac") || extHint.endsWith(".wav") || extHint.endsWith(".ape") || estKbps >= 700 ->
+            AudioFormatSupport.isHiResExtension(extHint) -> MusicQualityLevel.HIRES
+            AudioFormatSupport.isLosslessExtension(extHint) || estKbps >= 700 ->
                 MusicQualityLevel.LOSSLESS
             estKbps >= 256 -> MusicQualityLevel.EXHIGH
             else -> MusicQualityLevel.STANDARD

@@ -82,6 +82,7 @@ dependencies {
     implementation(libs.androidx.media3.datasource.okhttp)
     implementation(libs.androidx.media3.common)
     implementation(libs.androidx.media3.ui)
+    implementation(libs.jellyfin.media3.ffmpeg.decoder)
 
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)

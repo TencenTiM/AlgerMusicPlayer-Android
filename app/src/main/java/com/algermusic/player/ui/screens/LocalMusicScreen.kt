@@ -247,10 +247,10 @@ fun LocalMusicScreen(
 
     val losslessSongs = remember(state.allSongs) {
         state.allSongs.filter { s ->
-            val p = (s.localFilePath ?: s.nasVirtualPath).orEmpty().lowercase()
-            val badge = s.playingQualityBadge.orEmpty().lowercase()
-            p.endsWith(".flac") || p.endsWith(".wav") || p.endsWith(".ape") || p.endsWith(".dsf") || p.endsWith(".dff") ||
-                badge.contains("flac") || badge.contains("hi-res") || badge.contains("wav") || badge.contains("无损") || badge.contains("dsd")
+            com.algermusic.player.model.AudioFormatSupport.isLosslessTrack(
+                path = s.localFilePath ?: s.nasVirtualPath,
+                badge = s.playingQualityBadge
+            )
         }
     }
 
@@ -858,7 +858,7 @@ fun LocalMusicScreen(
                                         ) {
                                             LocalHubGridCard(
                                                 title = "无损高解析",
-                                                subtitle = "${losslessSongs.size} 首 FLAC/WAV",
+                                                subtitle = "${losslessSongs.size} 首无损音频",
                                                 icon = Icons.Filled.HighQuality,
                                                 accent = RoseHeart,
                                                 modifier = Modifier.weight(1f),
@@ -1424,17 +1424,11 @@ private fun LocalRecentCoverCard(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val badge = remember(song.localFilePath, song.playingQualityBadge) {
-        val p = song.localFilePath.orEmpty().lowercase()
-        val rawBadge = song.playingQualityBadge.orEmpty()
-        when {
-            p.endsWith(".flac") -> "FLAC"
-            p.endsWith(".wav") -> "WAV"
-            p.endsWith(".ape") -> "APE"
-            p.endsWith(".m4a") || p.endsWith(".aac") -> "AAC"
-            rawBadge.isNotBlank() -> rawBadge.take(8)
-            else -> "MP3"
-        }
+    val badge = remember(song.localFilePath, song.nasVirtualPath, song.playingQualityBadge) {
+        com.algermusic.player.model.AudioFormatSupport.formatCardBadge(
+            path = song.localFilePath ?: song.nasVirtualPath,
+            rawBadge = song.playingQualityBadge
+        )
     }
     Column(
         modifier = modifier

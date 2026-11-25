@@ -14,6 +14,7 @@ import com.algermusic.player.data.api.QqMusicService
 import com.algermusic.player.data.local.SettingsRepository
 import com.algermusic.player.data.lyric.LyricService
 import com.algermusic.player.data.unblock.UnblockMusicService
+import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.CompletedDownloadItem
 import com.algermusic.player.model.DownloadState
 import com.algermusic.player.model.DownloadTaskItem
@@ -61,9 +62,7 @@ class DownloadManagerService(
     private val bilibiliService: BilibiliService? = null
 ) {
     companion object {
-        private val SUPPORTED_AUDIO_EXTS = setOf(
-            ".mp3", ".flac", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".ape", ".wma"
-        )
+        private val SUPPORTED_AUDIO_EXTS: Set<String> = AudioFormatSupport.SUPPORTED_EXTENSIONS_WITH_DOT
         private const val SUBFOLDER = "AlgerMusicPlayer"
     }
 
@@ -350,7 +349,12 @@ class DownloadManagerService(
             tempFile.delete()
 
             val badge = resolved.qualityBadge.ifBlank {
-                if (realExt.equals(".flac", ignoreCase = true)) "无损 FLAC" else realExt.trimStart('.').uppercase()
+                val extUpper = realExt.trimStart('.').uppercase()
+                when {
+                    AudioFormatSupport.isHiResExtension(extUpper) -> "Hi-Res $extUpper"
+                    AudioFormatSupport.isLosslessExtension(extUpper) -> "无损 $extUpper"
+                    else -> extUpper
+                }
             }
 
             val completed = CompletedDownloadItem(
@@ -571,14 +575,7 @@ class DownloadManagerService(
         saveSidecarLrc: Boolean
     ): PublishedAudioInfo {
         val displayName = "$baseName$ext"
-        val mimeType = when (ext.lowercase()) {
-            ".flac" -> "audio/flac"
-            ".wav" -> "audio/wav"
-            ".m4a" -> "audio/mp4"
-            ".ogg" -> "audio/ogg"
-            ".aac" -> "audio/aac"
-            else -> "audio/mpeg"
-        }
+        val mimeType = AudioFormatSupport.mimeTypeForExtension(ext)
         val fileSize = sourceFile.length()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -702,66 +699,24 @@ class DownloadManagerService(
         contentType: String?,
         extHint: String?
     ): String {
+        var header = ByteArray(0)
+        var read = 0
         runCatching {
             if (file.exists()) {
-                val header = ByteArray(16)
-                val read = FileInputStream(file).use { it.read(header) }
-                if (read >= 4) {
-                    val b0 = header[0].toInt() and 0xFF
-                    val b1 = header[1].toInt() and 0xFF
-                    val b2 = header[2].toInt() and 0xFF
-                    val b3 = header[3].toInt() and 0xFF
-
-                    // FLAC: "fLaC"
-                    if (b0 == 0x66 && b1 == 0x4C && b2 == 0x61 && b3 == 0x43) return ".flac"
-                    // WAV: "RIFF....WAVE"
-                    if (read >= 12 &&
-                        b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 &&
-                        (header[8].toInt() and 0xFF) == 0x57 &&
-                        (header[9].toInt() and 0xFF) == 0x41 &&
-                        (header[10].toInt() and 0xFF) == 0x56 &&
-                        (header[11].toInt() and 0xFF) == 0x45
-                    ) return ".wav"
-                    // OGG: "OggS"
-                    if (b0 == 0x4F && b1 == 0x67 && b2 == 0x67 && b3 == 0x53) return ".ogg"
-                    // MP4/M4A: bytes 4..7 == "ftyp"
-                    if (read >= 8 &&
-                        (header[4].toInt() and 0xFF) == 0x66 &&
-                        (header[5].toInt() and 0xFF) == 0x74 &&
-                        (header[6].toInt() and 0xFF) == 0x79 &&
-                        (header[7].toInt() and 0xFF) == 0x70
-                    ) return ".m4a"
-                    // APE: "MAC "
-                    if (b0 == 0x4D && b1 == 0x41 && b2 == 0x43 && b3 == 0x20) return ".ape"
-                    // MP3: "ID3" or frame sync
-                    if ((b0 == 0x49 && b1 == 0x44 && b2 == 0x33) || (b0 == 0xFF && (b1 and 0xE0) == 0xE0)) {
-                        return ".mp3"
-                    }
+                val buf = ByteArray(64)
+                val n = FileInputStream(file).use { it.read(buf) }
+                if (n > 0) {
+                    header = buf
+                    read = n
                 }
             }
         }
-
-        if (!extHint.isNullOrBlank()) {
-            val normalized = if (extHint.startsWith(".")) extHint.lowercase() else ".${extHint.lowercase()}"
-            if (normalized in SUPPORTED_AUDIO_EXTS) return normalized
-        }
-
-        if (!contentType.isNullOrBlank()) {
-            val ct = contentType.lowercase()
-            if (ct.contains("flac")) return ".flac"
-            if (ct.contains("wav")) return ".wav"
-            if (ct.contains("ogg")) return ".ogg"
-            if (ct.contains("mp4") || ct.contains("m4a") || ct.contains("aac")) return ".m4a"
-            if (ct.contains("mpeg") || ct.contains("mp3")) return ".mp3"
-        }
-
-        val lowerUrl = url.lowercase()
-        return when {
-            lowerUrl.contains(".flac") -> ".flac"
-            lowerUrl.contains(".m4a") -> ".m4a"
-            lowerUrl.contains(".wav") -> ".wav"
-            lowerUrl.contains(".ogg") -> ".ogg"
-            else -> ".mp3"
-        }
+        return AudioFormatSupport.detectAudioExtension(
+            header = header,
+            length = read,
+            url = url,
+            contentType = contentType,
+            extHint = extHint
+        )
     }
 }

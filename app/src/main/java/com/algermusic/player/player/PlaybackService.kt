@@ -28,6 +28,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
@@ -326,7 +328,7 @@ class PlaybackService : MediaSessionService() {
                     .setAudioProcessors(arrayOf(eqProcessor))
                     .build()
             }
-        }
+        }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
 
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
@@ -342,7 +344,11 @@ class PlaybackService : MediaSessionService() {
             )
             .build()
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val defaultExtractorsFactory = DefaultExtractorsFactory()
+        val extractorsFactory = ExtractorsFactory {
+            defaultExtractorsFactory.createExtractors() + AiffExtractor()
+        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
             .setLoadErrorHandlingPolicy(
                 androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(1)
             )

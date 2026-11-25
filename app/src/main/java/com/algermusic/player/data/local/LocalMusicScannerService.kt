@@ -5,10 +5,13 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.algermusic.player.model.AlbumItem
 import com.algermusic.player.model.ArtistItem
+import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.LocalFolderNode
+import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.SongItem
 import com.kyant.taglib.TagLib
 import kotlinx.coroutines.Dispatchers
@@ -29,9 +32,7 @@ class LocalMusicScannerService(
     private val settingsRepo: SettingsRepository
 ) {
     companion object {
-        val SUPPORTED_EXTENSIONS = setOf(
-            "mp3", "flac", "wav", "m4a", "aac", "ogg", "opus", "ape", "wma"
-        )
+        val SUPPORTED_EXTENSIONS: Set<String> = AudioFormatSupport.SUPPORTED_EXTENSIONS
 
         private val LATIN1_SUPPLEMENT_REGEX = Regex("""[\u0080-\u00FF]""")
         private val CJK_UNIFIED_REGEX = Regex("""[\u3400-\u9FFF]""")
@@ -662,8 +663,15 @@ class LocalMusicScannerService(
         }
 
         val idHash = sha256HexPrefix(displayPath.lowercase().toByteArray(Charsets.UTF_8), 16)
-        val extBadge = fileName.substringAfterLast('.', "").uppercase().ifBlank { "LOCAL" }
+        val extLower = AudioFormatSupport.extractExtension(fileName)
+        val extBadge = extLower.uppercase().ifBlank { "LOCAL" }
         val qualityBadge = if (bitrateKbps > 0) "$extBadge ${bitrateKbps}k" else extBadge
+        val qualityLevel = when {
+            AudioFormatSupport.isHiResExtension(extLower) -> MusicQualityLevel.HIRES
+            AudioFormatSupport.isLosslessExtension(extLower) || bitrateKbps > 500 -> MusicQualityLevel.LOSSLESS
+            bitrateKbps >= 256 || AudioFormatSupport.isHighQualityLossyExtension(extLower) -> MusicQualityLevel.EXHIGH
+            else -> MusicQualityLevel.STANDARD
+        }
 
         return SongItem(
             id = "local_$idHash",
@@ -682,8 +690,62 @@ class LocalMusicScannerService(
             playMusicUrl = contentUri,
             resolvedPlatform = "local",
             playingQualityBadge = qualityBadge,
+            playingQualityLevel = qualityLevel,
             playingBitrateKbps = bitrateKbps
         )
+    }
+
+    /**
+     * 解析从外部文件管理器通过 ACTION_VIEW 传入的音频 URI，提取 TagLib 元数据与封面以便直接播放。
+     */
+    suspend fun parseExternalAudioUri(uri: Uri): SongItem? = withContext(Dispatchers.IO) {
+        var displayName = ""
+        var fileSize = 0L
+        if (uri.scheme.equals("content", ignoreCase = true)) {
+            runCatching {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIdx >= 0) displayName = cursor.getString(nameIdx).orEmpty()
+                        if (sizeIdx >= 0) fileSize = cursor.getLong(sizeIdx)
+                    }
+                }
+            }
+        } else if (uri.scheme.equals("file", ignoreCase = true)) {
+            val file = uri.path?.let { File(it) }
+            if (file != null) {
+                displayName = file.name
+                fileSize = file.length()
+            }
+        }
+        if (displayName.isBlank()) {
+            displayName = Uri.decode(uri.lastPathSegment.orEmpty())
+                .substringAfterLast('/')
+                .ifBlank { "外部音频.mp3" }
+        }
+        val displayPath = uri.path?.takeIf { uri.scheme.equals("file", ignoreCase = true) && it.isNotBlank() }
+            ?: "/外部音频/$displayName"
+
+        runCatching {
+            parseAudioFromUri(
+                contentUri = uri.toString(),
+                displayPath = normalizeFolderPath(displayPath),
+                fileName = displayName,
+                fileSize = fileSize,
+                modifiedTimeMs = System.currentTimeMillis(),
+                fallbackTitle = "",
+                fallbackArtist = "",
+                fallbackAlbum = "",
+                fallbackDurationMs = 0L
+            )
+        }.getOrNull()
     }
 
     private fun sha256HexPrefix(bytes: ByteArray, chars: Int): String {

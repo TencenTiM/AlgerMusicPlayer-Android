@@ -11,6 +11,7 @@ import com.algermusic.player.data.api.str
 import com.algermusic.player.data.local.SettingsRepository
 import com.algermusic.player.model.AlbumItem
 import com.algermusic.player.model.ArtistItem
+import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.NasCollectionItem
 import com.algermusic.player.model.NasEntryItem
@@ -51,17 +52,12 @@ class NasMusicService(
     private val baseClient: OkHttpClient
 ) {
     companion object {
-        private val AUDIO_EXTENSIONS = setOf(
-            "flac", "mp3", "wav", "m4a", "aac", "ogg", "opus", "ape", "alac", "wma", "dsf", "dff"
-        )
+        private val AUDIO_EXTENSIONS: Set<String> = AudioFormatSupport.SUPPORTED_EXTENSIONS
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
         private val DEFAULT_COVER_NAMES = listOf("cover", "folder", "front", "album", "thumb")
         private val TRACK_NUM_PREFIX = Regex("""^\s*\d{1,3}[\s.\-_]+""")
 
-        fun isAudioFilename(name: String): Boolean {
-            val ext = name.substringAfterLast('.', "").lowercase()
-            return ext in AUDIO_EXTENSIONS
-        }
+        fun isAudioFilename(name: String): Boolean = AudioFormatSupport.isSupportedAudioFilename(name)
     }
 
     private val fnosMusicClient = FnosNativeClient(baseClient)
@@ -769,8 +765,13 @@ class NasMusicService(
         val coverUrl = buildSubsonicCoverUrl(config, obj.str("coverArt"))
         val streamUrl = buildSubsonicStreamUrl(config, id)
 
-        val isLossless = suffix in setOf("FLAC", "WAV", "APE", "ALAC", "DSF", "DFF") || bitRate > 500
-        val level = if (isLossless) MusicQualityLevel.LOSSLESS else MusicQualityLevel.EXHIGH
+        val isHiRes = AudioFormatSupport.isHiResExtension(suffix)
+        val isLossless = isHiRes || AudioFormatSupport.isLosslessExtension(suffix) || bitRate > 500
+        val level = when {
+            isHiRes -> MusicQualityLevel.HIRES
+            isLossless -> MusicQualityLevel.LOSSLESS
+            else -> MusicQualityLevel.EXHIGH
+        }
         val badge = when {
             suffix.isNotBlank() && bitRate > 0 -> "$suffix ${bitRate}k"
             suffix.isNotBlank() -> suffix
@@ -824,15 +825,16 @@ class NasMusicService(
             title = rawStem.ifBlank { fileName }
         }
 
-        val isLossless = ext in setOf("FLAC", "WAV", "APE", "ALAC", "DSF", "DFF")
+        val isHiRes = AudioFormatSupport.isHiResExtension(ext)
+        val isLossless = isHiRes || AudioFormatSupport.isLosslessExtension(ext)
         val qualityLevel = when {
-            ext in setOf("DSF", "DFF") -> MusicQualityLevel.HIRES
+            isHiRes -> MusicQualityLevel.HIRES
             isLossless -> MusicQualityLevel.LOSSLESS
-            ext in setOf("MP3", "M4A", "AAC", "OGG", "OPUS") -> MusicQualityLevel.EXHIGH
+            AudioFormatSupport.isHighQualityLossyExtension(ext) -> MusicQualityLevel.EXHIGH
             else -> MusicQualityLevel.STANDARD
         }
         val qualityBadge = when {
-            ext in setOf("DSF", "DFF") -> "DSD 原盘"
+            isHiRes -> "DSD 原盘"
             isLossless -> "$ext 无损"
             ext.isNotBlank() -> ext
             else -> "NAS 音频"

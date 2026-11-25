@@ -31,8 +31,9 @@
 -keep class com.kyant.backdrop.** { *; }
 -keep class com.kyant.shapes.** { *; }
 
-# Media3 ExoPlayer / MediaSession
+# Media3 ExoPlayer / MediaSession / Jellyfin FFmpeg Decoder
 -keep class androidx.media3.** { *; }
+-keep class org.jellyfin.media3.** { *; }
 
 # Optional TLS providers referenced by OkHttp
 -dontwarn okhttp3.**

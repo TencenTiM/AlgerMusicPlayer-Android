@@ -10,6 +10,7 @@ import com.algermusic.player.data.api.obj
 import com.algermusic.player.data.api.str
 import com.algermusic.player.model.AlbumItem
 import com.algermusic.player.model.ArtistItem
+import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.NasCollectionItem
 import com.algermusic.player.model.NasServerConfig
@@ -668,13 +669,13 @@ class FnosNativeClient(
             ?: json.long("updatedAt", 0L).takeIf { it > 0L }
             ?: fallbackModifiedTime
 
-        val isHiRes = bitDepth >= 24 || sampleRate > 48_000 || fmt in setOf("DSF", "DFF", "DSD")
-        val isLossless = isHiRes || fmt in setOf("FLAC", "WAV", "APE", "ALAC") || kbps > 450
+        val isHiRes = bitDepth >= 24 || sampleRate > 48_000 || AudioFormatSupport.isHiResExtension(fmt)
+        val isLossless = isHiRes || AudioFormatSupport.isLosslessExtension(fmt) || kbps > 450
 
         val qualityLevel = when {
             isHiRes -> MusicQualityLevel.HIRES
             isLossless -> MusicQualityLevel.LOSSLESS
-            kbps >= 256 || fmt in setOf("MP3", "AAC", "M4A", "OGG", "OPUS") -> MusicQualityLevel.EXHIGH
+            kbps >= 256 || AudioFormatSupport.isHighQualityLossyExtension(fmt) -> MusicQualityLevel.EXHIGH
             else -> MusicQualityLevel.STANDARD
         }
 

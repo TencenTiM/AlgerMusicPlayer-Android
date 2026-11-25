@@ -1153,6 +1153,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return container.localScanner.resolveTreeUriDisplayInfo(uriStr)
     }
 
+    fun playExternalAudioUri(uri: Uri) {
+        viewModelScope.launch {
+            val song = container.localScanner.parseExternalAudioUri(uri) ?: return@launch
+            container.awaitInitialized()
+            playerController.playSong(song)
+        }
+    }
+
     fun setLocalViewMode(mode: String) {
         if (_localHubSourceMode.value == "nas") {
             _nasLibrary.update { it.copy(viewMode = mode) }

@@ -860,8 +860,7 @@ class LxScriptHostService(
     }
 
     private suspend fun resolveAudioUrl(url: String): String? = withContext(Dispatchers.IO) {
-        val lower = url.lowercase()
-        if (listOf(".flac", ".mp3", ".m4a", ".ogg", ".aac").any { lower.contains(it) }) {
+        if (com.algermusic.player.model.AudioFormatSupport.isSupportedAudioFilename(url)) {
             return@withContext url
         }
         runCatching {
