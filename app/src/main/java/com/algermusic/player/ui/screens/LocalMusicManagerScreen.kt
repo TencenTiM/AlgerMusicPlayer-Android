@@ -84,7 +84,8 @@ fun LocalMusicManagerScreen(
     onClearBlockedFolders: () -> Unit,
     onToggleMediaStore: (Boolean) -> Unit,
     onScanNow: () -> Unit,
-    onClearCache: () -> Unit
+    onClearCache: () -> Unit,
+    onOpenDuplicateDetector: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val navBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -507,8 +508,40 @@ fun LocalMusicManagerScreen(
                 }
             }
 
-            // 5. 缓存维护
+            // 5. 重复歌曲检测与缓存维护
             if (state.allSongs.isNotEmpty()) {
+                item(key = "duplicate_detector") {
+                    AlgerGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        cornerRadius = 16.dp,
+                        onClick = onOpenDuplicateDetector
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Refresh,
+                                contentDescription = null,
+                                tint = EmeraldAccent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "检测重复歌曲（本地 / NAS）",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = "按歌名、歌手与时长聚类重复曲目，推荐保留无损高音质版本并一键清理低质副本",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
                 item(key = "clear_cache") {
                     AlgerGlassCard(
                         modifier = Modifier.fillMaxWidth(),

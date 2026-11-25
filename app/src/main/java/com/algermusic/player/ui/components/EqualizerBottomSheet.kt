@@ -16,9 +16,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
@@ -56,6 +58,16 @@ import kotlin.math.roundToInt
 fun EqualizerBottomSheet(
     config: EqualizerConfig,
     onConfigChanged: (EqualizerConfig) -> Unit,
+    replayGainEnabled: Boolean = false,
+    replayGainPreampDb: Float = 0f,
+    monoAudioEnabled: Boolean = false,
+    channelBalance: Float = 0f,
+    onUpdateAudioEnhancements: (
+        replayGainEnabled: Boolean?,
+        replayGainPreampDb: Float?,
+        monoAudioEnabled: Boolean?,
+        channelBalance: Float?
+    ) -> Unit = { _, _, _, _ -> },
     onDismiss: () -> Unit,
     backdrop: com.kyant.backdrop.Backdrop? = LocalMainBackdrop.current
 ) {
@@ -66,6 +78,7 @@ fun EqualizerBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 18.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -318,6 +331,123 @@ fun EqualizerBottomSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+
+            // 响度均衡（ReplayGain）+ 单声道合并 + 左右声道平衡
+            HorizontalDivider(thickness = 0.6.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .border(0.6.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "响度均衡 (ReplayGain)",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "自动读取歌曲 ReplayGain / R128 标签统一音量",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = replayGainEnabled,
+                        onCheckedChange = { onUpdateAudioEnhancements(it, null, null, null) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = EmeraldAccent)
+                    )
+                }
+
+                if (replayGainEnabled) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "响度补偿",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Slider(
+                            value = replayGainPreampDb,
+                            onValueChange = { v ->
+                                val rounded = (v * 2f).roundToInt() / 2f
+                                onUpdateAudioEnhancements(null, rounded, null, null)
+                            },
+                            valueRange = -6f..6f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = EmeraldAccent, activeTrackColor = EmeraldAccent)
+                        )
+                        Text(
+                            text = String.format("%+.1f dB", replayGainPreampDb),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.width(54.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "单声道合并 (Mono)",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "将左右声道合并输出，适合单耳佩戴耳机听歌",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = monoAudioEnabled,
+                        onCheckedChange = { onUpdateAudioEnhancements(null, null, it, null) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = EmeraldAccent)
+                    )
+                }
+
+                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "声道平衡",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Slider(
+                        value = channelBalance,
+                        onValueChange = { v ->
+                            val snapped = if (kotlin.math.abs(v) < 0.06f) 0f else (v * 20f).roundToInt() / 20f
+                            onUpdateAudioEnhancements(null, null, null, snapped)
+                        },
+                        valueRange = -1f..1f,
+                        modifier = Modifier.weight(1f),
+                        colors = SliderDefaults.colors(thumbColor = EmeraldAccent, activeTrackColor = EmeraldAccent)
+                    )
+                    val balText = when {
+                        kotlin.math.abs(channelBalance) < 0.02f -> "居中"
+                        channelBalance < 0f -> "左 ${(-channelBalance * 100).roundToInt()}%"
+                        else -> "右 ${(channelBalance * 100).roundToInt()}%"
+                    }
+                    Text(
+                        text = balText,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.width(54.dp)
+                    )
                 }
             }
         }

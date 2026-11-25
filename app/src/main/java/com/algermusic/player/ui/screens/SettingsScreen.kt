@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -51,6 +53,16 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.BluetoothAudio
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bedtime
@@ -186,6 +198,9 @@ fun SettingsScreen(
     onNasCacheWhilePlayingChange: (NasCacheWhilePlayingMode) -> Unit = {},
     onNasNetworkPlayModeChange: (NasNetworkPlayMode) -> Unit = {},
     onAutoPlayOnLaunchChange: (Boolean) -> Unit = {},
+    onAutoPlayOnBluetoothChange: (Boolean) -> Unit = {},
+    onCrossfadeDurationChange: (Int) -> Unit = {},
+    onSkipSilenceChange: (Boolean) -> Unit = {},
     onInfiniteContinueModeChange: (InfiniteContinueMode) -> Unit = {},
     onLyricLayoutModeChange: (LyricLayoutMode) -> Unit = {},
     onShowTranslationChange: (Boolean) -> Unit = {},
@@ -210,7 +225,18 @@ fun SettingsScreen(
     onCheckAppUpdate: () -> Unit = {},
     onStartAppUpdateDownload: () -> Unit = {},
     onCancelAppUpdateDownload: () -> Unit = {},
-    onInstallAppUpdate: () -> Unit = {}
+    onInstallAppUpdate: () -> Unit = {},
+    storageCacheStats: com.algermusic.player.ui.viewmodel.MainViewModel.StorageCacheStats = com.algermusic.player.ui.viewmodel.MainViewModel.StorageCacheStats(),
+    onRefreshCacheStats: () -> Unit = {},
+    onAudioCacheMaxMbChange: (Int) -> Unit = {},
+    onClearStreamCache: () -> Unit = {},
+    onClearCoverCache: () -> Unit = {},
+    onClearLyricCache: () -> Unit = {},
+    hasWebDavBackupServer: Boolean = false,
+    onExportBackupUri: (Uri) -> Unit = {},
+    onImportBackupUri: (Uri) -> Unit = {},
+    onUploadWebDavBackup: () -> Unit = {},
+    onRestoreWebDavBackup: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isDark = LocalIsDarkTheme.current
@@ -239,6 +265,18 @@ fun SettingsScreen(
     var showSourcesDialog by remember { mutableStateOf(false) }
     var showAodWidgetGuideDialog by remember { mutableStateOf(false) }
     var editingTextDialog by remember { mutableStateOf<Triple<String, String, (String) -> Unit>?>(null) }
+
+    val backupExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> if (uri != null) onExportBackupUri(uri) }
+
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) onImportBackupUri(uri) }
+
+    LaunchedEffect(Unit) {
+        onRefreshCacheStats()
+    }
 
     fun openPopover(menu: ActiveIosPopoverMenu) {
         menuSelectedKeyOverride = menu.selectedKey
@@ -406,6 +444,50 @@ fun SettingsScreen(
                             title = "启动时自动播放",
                             checked = settings.autoPlayOnLaunch,
                             onCheckedChange = onAutoPlayOnLaunchChange
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosLiquidSwitchRow(
+                            icon = Icons.Filled.BluetoothAudio,
+                            iconBg = IosIndigo,
+                            iconCircle = true,
+                            title = "蓝牙连接自动续播",
+                            checked = settings.autoPlayOnBluetoothConnect,
+                            onCheckedChange = onAutoPlayOnBluetoothChange
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosMenuSelectorRow(
+                            icon = Icons.Filled.Tune,
+                            iconBg = IosTeal,
+                            iconCircle = true,
+                            title = "切歌淡入淡出",
+                            valueText = if (settings.crossfadeDurationSec <= 0) "关闭" else "${settings.crossfadeDurationSec} 秒",
+                            onTriggerClick = { rect ->
+                                openPopover(
+                                    ActiveIosPopoverMenu(
+                                        id = "crossfade_sec",
+                                        anchorRectInRoot = rect,
+                                        options = listOf(0, 2, 4, 6, 8).map { sec ->
+                                            IosMenuOption(sec.toString(), if (sec == 0) "关闭" else "${sec} 秒")
+                                        },
+                                        selectedKey = settings.crossfadeDurationSec.toString(),
+                                        onSelect = { key ->
+                                            menuSelectedKeyOverride = key
+                                            dismissPopover {
+                                                onCrossfadeDurationChange(key.toIntOrNull() ?: 0)
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosLiquidSwitchRow(
+                            icon = Icons.Filled.FastForward,
+                            iconBg = IosOrange,
+                            iconCircle = true,
+                            title = "跳过静音片段",
+                            checked = settings.skipSilenceEnabled,
+                            onCheckedChange = onSkipSilenceChange
                         )
                         IosGroupDivider(isDark = isDark)
                         IosMenuSelectorRow(
@@ -798,6 +880,121 @@ fun SettingsScreen(
                     }
                 }
 
+                // 5.5 存储与缓存管理
+                item(key = "sec_storage_cache") {
+                    val streamText = MusicQualityLevel.formatFileSizeShort(storageCacheStats.streamCacheBytes).ifBlank { "0 KB" }
+                    val coverText = MusicQualityLevel.formatFileSizeShort(storageCacheStats.coverCacheBytes).ifBlank { "0 KB" }
+                    val lyricText = MusicQualityLevel.formatFileSizeShort(storageCacheStats.lyricCacheBytes).ifBlank { "0 KB" }
+                    val maxMbLabel = if (settings.audioCacheMaxMb >= 1024) {
+                        "${settings.audioCacheMaxMb / 1024} GB"
+                    } else {
+                        "${settings.audioCacheMaxMb} MB"
+                    }
+                    IosSettingsGroup(
+                        headerIcon = Icons.Filled.Storage,
+                        headerTitle = "存储与缓存管理",
+                        footerText = "修改音频流缓存上限将在下次启动播放服务时生效，点击各缓存项可单独释放空间。",
+                        cardBg = cardBg,
+                        isDark = isDark
+                    ) {
+                        IosMenuSelectorRow(
+                            icon = Icons.Filled.Storage,
+                            iconBg = IosBlue,
+                            title = "音频流缓存上限",
+                            valueText = maxMbLabel,
+                            onTriggerClick = { rect ->
+                                openPopover(
+                                    ActiveIosPopoverMenu(
+                                        id = "audio_cache_max",
+                                        anchorRectInRoot = rect,
+                                        options = listOf(
+                                            IosMenuOption("200", "200 MB"),
+                                            IosMenuOption("500", "500 MB"),
+                                            IosMenuOption("1024", "1 GB"),
+                                            IosMenuOption("2048", "2 GB"),
+                                            IosMenuOption("5120", "5 GB")
+                                        ),
+                                        selectedKey = settings.audioCacheMaxMb.toString(),
+                                        onSelect = { key ->
+                                            menuSelectedKeyOverride = key
+                                            dismissPopover {
+                                                onAudioCacheMaxMbChange(key.toIntOrNull() ?: 500)
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.CleaningServices,
+                            iconBg = IosOrange,
+                            title = "清理音频流缓存",
+                            valueText = streamText,
+                            onClick = onClearStreamCache
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.CleaningServices,
+                            iconBg = IosTeal,
+                            title = "清理封面图片缓存",
+                            valueText = coverText,
+                            onClick = onClearCoverCache
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.CleaningServices,
+                            iconBg = IosIndigo,
+                            title = "清理歌词磁盘缓存",
+                            valueText = lyricText,
+                            onClick = onClearLyricCache
+                        )
+                    }
+                }
+
+                // 5.6 数据备份与同步
+                item(key = "sec_backup_restore") {
+                    IosSettingsGroup(
+                        headerIcon = Icons.Filled.Backup,
+                        headerTitle = "数据备份与同步",
+                        footerText = "包含应用设置、NAS 服务器、落雪脚本、收藏列表、自建混合歌单与手动绑定的歌词映射。",
+                        cardBg = cardBg,
+                        isDark = isDark
+                    ) {
+                        IosDetailNavRow(
+                            icon = Icons.Filled.FileUpload,
+                            iconBg = EmeraldAccent,
+                            title = "导出配置与歌单备份",
+                            valueText = "JSON 文件",
+                            onClick = { backupExportLauncher.launch("AlgerMusicPlayer_Backup.json") }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.FileDownload,
+                            iconBg = IosBlue,
+                            title = "从本地备份文件恢复",
+                            valueText = "选择 JSON",
+                            onClick = { backupImportLauncher.launch(arrayOf("application/json", "text/*", "*/*")) }
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.CloudUpload,
+                            iconBg = IosIndigo,
+                            title = "同步上传到 NAS WebDAV",
+                            valueText = if (hasWebDavBackupServer) "已就绪" else "需配置 WebDAV",
+                            onClick = onUploadWebDavBackup
+                        )
+                        IosGroupDivider(isDark = isDark)
+                        IosDetailNavRow(
+                            icon = Icons.Filled.CloudDownload,
+                            iconBg = IosTeal,
+                            title = "从 NAS WebDAV 拉取恢复",
+                            valueText = if (hasWebDavBackupServer) "云端恢复" else "需配置 WebDAV",
+                            onClick = onRestoreWebDavBackup
+                        )
+                    }
+                }
+
                 // 6. 关于
                 item(key = "sec_about") {
                     val updateStatusText = when {
@@ -846,21 +1043,6 @@ fun SettingsScreen(
                                 runCatching {
                                     context.startActivity(
                                         Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateService.GITHUB_REPO_URL))
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                }
-                            }
-                        )
-                        IosGroupDivider(isDark = isDark)
-                        IosDetailNavRow(
-                            icon = Icons.Filled.Groups,
-                            iconBg = IosTeal,
-                            title = "作者群",
-                            valueText = "QQ群 1137351952",
-                            onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/ScReTV5fA4"))
                                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     )
                                 }

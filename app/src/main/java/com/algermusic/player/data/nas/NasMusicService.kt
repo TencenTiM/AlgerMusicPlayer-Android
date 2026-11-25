@@ -516,6 +516,9 @@ class NasMusicService(
         var folderCoverUrl = ""
         val imageByBase = HashMap<String, String>()
         val lrcByBase = HashMap<String, String>()
+        val cueNodes = mutableListOf<DavNode>()
+        val audioNodesByName = HashMap<String, DavNode>()
+        val audioNodesByStem = HashMap<String, DavNode>()
 
         for (n in nodes) {
             if (n.isDir) continue
@@ -529,17 +532,90 @@ class NasMusicService(
                 }
             } else if (ext == "lrc") {
                 lrcByBase[baseLower] = n.decodedHref
+            } else if (ext == "cue") {
+                cueNodes.add(n)
+            } else if (isAudioFilename(n.name)) {
+                audioNodesByName[n.name.lowercase()] = n
+                audioNodesByStem[baseLower] = n
             }
         }
 
         val folderAlbum = effectivePath.trimEnd('/').substringAfterLast('/').ifBlank { config.name }
         val dirs = mutableListOf<NasEntryItem>()
         val files = mutableListOf<NasEntryItem>()
+        val cueConsumedAudioNames = HashSet<String>()
+
+        // 解析 WebDAV 同目录的 .cue 整轨分轨表
+        for (cueNode in cueNodes) {
+            val cueUrl = buildWebDavFileUrl(config, cueNode.decodedHref)
+            val cueText = runCatching {
+                val cueReqBuilder = Request.Builder().url(cueUrl).get()
+                if (config.username.isNotBlank() || config.password.isNotBlank()) {
+                    cueReqBuilder.header("Authorization", Credentials.basic(config.username, config.password, Charsets.UTF_8))
+                }
+                client.newCall(cueReqBuilder.build()).execute().use { r ->
+                    if (!r.isSuccessful) return@use null
+                    val bytes = r.body?.bytes() ?: return@use null
+                    com.algermusic.player.data.local.CueSheetParser.decodeCueBytes(bytes)
+                }
+            }.getOrNull() ?: continue
+
+            val parsedCue = com.algermusic.player.data.local.CueSheetParser.parse(cueText)
+            if (parsedCue.tracks.isEmpty()) continue
+            val cueStemLower = cueNode.name.substringBeforeLast('.').lowercase()
+            for ((refLower, cueTracks) in parsedCue.tracks.groupBy { it.audioFileName.lowercase() }) {
+                val audioNode = audioNodesByName[refLower]
+                    ?: audioNodesByStem[refLower.substringBeforeLast('.')]
+                    ?: audioNodesByStem[cueStemLower]
+                    ?: continue
+                cueConsumedAudioNames.add(audioNode.name.lowercase())
+                val baseLower = audioNode.name.substringBeforeLast('.').lowercase()
+                val playUrl = buildWebDavFileUrl(config, audioNode.decodedHref)
+                val coverUrl = imageByBase[baseLower] ?: folderCoverUrl
+                val baseSong = buildNasSongItem(
+                    config = config,
+                    fileName = audioNode.name,
+                    filePath = audioNode.decodedHref,
+                    folderAlbumHint = parsedCue.albumTitle.ifBlank { folderAlbum },
+                    sizeBytes = audioNode.size,
+                    modifiedSec = 0L,
+                    directPlayUrl = playUrl,
+                    coverUrl = coverUrl,
+                    lyricPath = lrcByBase[baseLower]
+                )
+                for (ct in cueTracks) {
+                    val durMs = if (ct.endMs != null && ct.endMs > ct.startMs) ct.endMs - ct.startMs else 0L
+                    val trackHash = MessageDigest.getInstance("SHA-256")
+                        .digest("${config.id}|${audioNode.decodedHref}|cue_${ct.trackNumber}_${ct.startMs}".toByteArray(StandardCharsets.UTF_8))
+                        .take(8)
+                        .joinToString("") { "%02x".format(it) }
+                    val trackSong = baseSong.copy(
+                        id = "nas_cue_$trackHash",
+                        name = ct.title,
+                        artists = listOf(ArtistItem(name = ct.performer)),
+                        album = baseSong.album.copy(name = ct.album.ifBlank { baseSong.album.name }),
+                        durationMs = durMs,
+                        clipStartMs = ct.startMs,
+                        clipEndMs = ct.endMs,
+                        cueSheetPath = cueNode.decodedHref
+                    )
+                    files.add(
+                        NasEntryItem(
+                            name = "${ct.trackNumber.toString().padStart(2, '0')}. ${ct.title}",
+                            path = audioNode.decodedHref,
+                            isDirectory = false,
+                            sizeBytes = audioNode.size,
+                            song = trackSong
+                        )
+                    )
+                }
+            }
+        }
 
         for (n in nodes) {
             if (n.isDir) {
                 dirs.add(NasEntryItem(name = n.name, path = n.decodedHref, isDirectory = true))
-            } else if (isAudioFilename(n.name)) {
+            } else if (isAudioFilename(n.name) && n.name.lowercase() !in cueConsumedAudioNames) {
                 val baseLower = n.name.substringBeforeLast('.').lowercase()
                 val playUrl = buildWebDavFileUrl(config, n.decodedHref)
                 val coverUrl = imageByBase[baseLower] ?: folderCoverUrl

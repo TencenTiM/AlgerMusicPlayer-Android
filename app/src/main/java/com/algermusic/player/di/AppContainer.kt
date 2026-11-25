@@ -46,6 +46,7 @@ class AppContainer(context: Context) {
     val nasMusicService = com.algermusic.player.data.nas.NasMusicService(settingsRepository, okHttpClient)
     val lyricService = LyricService(appContext, apiClient, settingsRepository, okHttpClient, qqMusicService, nasMusicService)
     val localScanner = LocalMusicScannerService(appContext, settingsRepository)
+    val backupRestoreService = com.algermusic.player.data.local.BackupRestoreService(settingsRepository, okHttpClient)
     val remoteControlClient = com.algermusic.player.data.remote.RemoteControlClient(okHttpClient)
     val appUpdateService = com.algermusic.player.data.update.AppUpdateService(appContext, okHttpClient)
     val equalizerAudioProcessor = TenBandEqualizerAudioProcessor()

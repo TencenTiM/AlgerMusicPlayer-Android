@@ -142,6 +142,7 @@ sealed interface SubPage {
     data object LxScripts : SubPage
     data class ThirdPartyZone(val initialHubMode: String = "imported") : SubPage
     data class ThirdPartyPlaylistDetail(val playlist: PlaylistItem, val forcePlatform: String) : SubPage
+    data class CustomPlaylistDetail(val playlistId: String) : SubPage
 }
 
 private data class SubPageEntry(
@@ -166,6 +167,9 @@ fun MainScreen(
     val commentsState by viewModel.comments.collectAsState()
     val favorites by viewModel.favoritesFlow.collectAsState()
     val favoritePlaylists by viewModel.favoritePlaylistsFlow.collectAsState()
+    val customPlaylists by viewModel.customPlaylistsFlow.collectAsState()
+    val customLyricOverrides by viewModel.customLyricOverridesFlow.collectAsState()
+    val storageCacheStats by viewModel.storageCacheStatsFlow.collectAsState()
     val recentSongs by viewModel.recentFlow.collectAsState()
     val downloadTasks by viewModel.downloadTasksFlow.collectAsState()
     val completedDownloads by viewModel.completedDownloadsFlow.collectAsState()
@@ -207,6 +211,11 @@ fun MainScreen(
         }
     }
     var playerExpanded by rememberSaveable { mutableStateOf(false) }
+    var lyricSearchTargetSong by remember { mutableStateOf<SongItem?>(null) }
+    var tagEditorTargetSong by remember { mutableStateOf<SongItem?>(null) }
+    var addToPlaylistTargetSong by remember { mutableStateOf<SongItem?>(null) }
+    var showDuplicateDetectorSheet by remember { mutableStateOf(false) }
+    var showDrivingMode by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentTab) {
         if (currentTab != 1) {
@@ -656,6 +665,19 @@ fun MainScreen(
                                             viewModel.loadPlaylistDetail(id)
                                             pushSubPage(SubPage.PlaylistDetail(id))
                                         },
+                                        customPlaylists = customPlaylists,
+                                        onCreateCustomPlaylist = { name ->
+                                            viewModel.createCustomPlaylist(name)
+                                            uiScope.launch { snackbarHostState.showSnackbar("已创建歌单「$name」") }
+                                        },
+                                        onOpenCustomPlaylist = { pl ->
+                                            pushSubPage(SubPage.CustomPlaylistDetail(pl.id))
+                                        },
+                                        onImportM3u8Uri = { uri ->
+                                            viewModel.importM3u8FromUri(uri) { msg ->
+                                                uiScope.launch { snackbarHostState.showSnackbar(msg) }
+                                            }
+                                        },
                                         onOpenCollectedPlaylist = { pl ->
                                             when {
                                                 pl.qqDissId.isNotBlank() -> {
@@ -889,7 +911,8 @@ fun MainScreen(
                             onClearBlockedFolders = { viewModel.clearBlockedLocalFolders() },
                             onToggleMediaStore = { viewModel.setScanMediaStoreEnabled(it) },
                             onScanNow = { viewModel.scanLocalMusic() },
-                            onClearCache = { viewModel.clearLocalMusicCache() }
+                            onClearCache = { viewModel.clearLocalMusicCache() },
+                            onOpenDuplicateDetector = { showDuplicateDetectorSheet = true }
                         )
 
                         SubPage.RemoteControl -> RemoteControlScreen(
@@ -946,6 +969,9 @@ fun MainScreen(
                             onNasCacheWhilePlayingChange = { viewModel.setNasCacheWhilePlaying(it) },
                             onNasNetworkPlayModeChange = { viewModel.setNasNetworkPlayMode(it) },
                             onAutoPlayOnLaunchChange = { viewModel.setAutoPlayOnLaunch(it) },
+                            onAutoPlayOnBluetoothChange = { viewModel.setAutoPlayOnBluetoothConnect(it) },
+                            onCrossfadeDurationChange = { viewModel.setCrossfadeDurationSec(it) },
+                            onSkipSilenceChange = { viewModel.setSkipSilenceEnabled(it) },
                             onInfiniteContinueModeChange = { viewModel.setInfiniteContinueMode(it) },
                             onEnableStatusBarLyricChange = { viewModel.setEnableStatusBarLyric(it) },
                             onLyricLayoutModeChange = { viewModel.setLyricLayoutMode(it) },
@@ -970,7 +996,32 @@ fun MainScreen(
                             onCheckAppUpdate = { viewModel.checkForAppUpdate() },
                             onStartAppUpdateDownload = { viewModel.startAppUpdateDownload() },
                             onCancelAppUpdateDownload = { viewModel.cancelAppUpdateDownload() },
-                            onInstallAppUpdate = { viewModel.triggerApkInstall() }
+                            onInstallAppUpdate = { viewModel.triggerApkInstall() },
+                            storageCacheStats = storageCacheStats,
+                            onRefreshCacheStats = { viewModel.refreshStorageCacheStats() },
+                            onAudioCacheMaxMbChange = { viewModel.setAudioCacheMaxMb(it) },
+                            onClearStreamCache = {
+                                viewModel.clearStreamCache { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            onClearCoverCache = {
+                                viewModel.clearCoverCache { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            onClearLyricCache = {
+                                viewModel.clearLyricCache { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            hasWebDavBackupServer = viewModel.hasWebDavBackupServer(),
+                            onExportBackupUri = { uri ->
+                                viewModel.exportBackupToUri(uri) { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            onImportBackupUri = { uri ->
+                                viewModel.importBackupFromUri(uri) { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            onUploadWebDavBackup = {
+                                viewModel.uploadBackupToWebDav { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            },
+                            onRestoreWebDavBackup = {
+                                viewModel.restoreBackupFromWebDav { msg -> uiScope.launch { snackbarHostState.showSnackbar(msg) } }
+                            }
                         )
 
                         SubPage.NeteaseWebLogin, SubPage.QqQuickLogin -> Unit
@@ -1114,6 +1165,31 @@ fun MainScreen(
                             onOpenSourceConfig = { showSourceQualitySheet = true },
                             onOpenQqMusic = { pushSubPage(SubPage.QqMusic) }
                         )
+
+                        is SubPage.CustomPlaylistDetail -> {
+                            val targetPl = customPlaylists.firstOrNull { it.id == page.playlistId }
+                            if (targetPl != null) {
+                                com.algermusic.player.ui.components.CustomPlaylistDetailScreen(
+                                    playlist = targetPl,
+                                    currentSongId = currentSongId,
+                                    isPlaying = isPlaying,
+                                    isFavorite = isFav,
+                                    onBack = { popSubPage() },
+                                    onPlaySong = onPlaySongWithAction,
+                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                    onRemoveSong = { sid -> viewModel.removeSongFromCustomPlaylist(targetPl.id, sid) },
+                                    onRenamePlaylist = { newName -> viewModel.renameCustomPlaylist(targetPl.id, newName) },
+                                    onDeletePlaylist = { viewModel.deleteCustomPlaylist(targetPl.id) },
+                                    onExportM3u8Uri = { uri ->
+                                        viewModel.exportCustomPlaylistToM3u8Uri(targetPl, uri) { msg ->
+                                            uiScope.launch { snackbarHostState.showSnackbar(msg) }
+                                        }
+                                    }
+                                )
+                            } else {
+                                popSubPage()
+                            }
+                        }
 
                         is SubPage.ThirdPartyPlaylistDetail -> {
                             val mergedPl = (detailState.playlist ?: page.playlist).let { base ->
@@ -1410,6 +1486,10 @@ fun MainScreen(
                                     onOpenSourceAndQuality = { showSourceQualitySheet = true },
                                     onOpenComments = onShowCommentsCb,
                                     onOpenMv = { mvId -> openMvWithQueue(mvId, emptyList()) },
+                                    onOpenAddToPlaylist = { addToPlaylistTargetSong = it },
+                                    onOpenTagEditor = { tagEditorTargetSong = it },
+                                    onOpenDrivingMode = { showDrivingMode = true },
+                                    onOpenLyricSearch = { lyricSearchTargetSong = it },
                                     onSetRate = { viewModel.playerController.setPlaybackRate(it) },
                                     onOpenSleepTimer = { showSleepTimerSheet = true },
                                     onToggleTranslation = { viewModel.playerController.toggleTranslation() },
@@ -1524,8 +1604,120 @@ fun MainScreen(
                     EqualizerBottomSheet(
                         config = playerState.equalizerConfig,
                         onConfigChanged = { viewModel.playerController.applyEqualizer(it) },
+                        replayGainEnabled = settings.replayGainEnabled,
+                        replayGainPreampDb = settings.replayGainPreampDb,
+                        monoAudioEnabled = settings.monoAudioEnabled,
+                        channelBalance = settings.channelBalance,
+                        onUpdateAudioEnhancements = { rgEn, rgPre, mono, bal ->
+                            viewModel.updateAudioEnhancements(rgEn, rgPre, mono, bal)
+                        },
                         onDismiss = { showEqSheet = false },
                         backdrop = activeSheetBackdrop
+                    )
+                }
+
+                lyricSearchTargetSong?.let { targetSong ->
+                    com.algermusic.player.ui.components.LyricSearchBottomSheet(
+                        song = targetSong,
+                        hasManualOverride = customLyricOverrides.containsKey(targetSong.id),
+                        onSearchCandidates = { kw -> viewModel.searchLyricCandidates(kw) },
+                        onSelectCandidate = { cand ->
+                            viewModel.applyOnlineLyricCandidate(targetSong, cand) { msg ->
+                                uiScope.launch { snackbarHostState.showSnackbar(msg) }
+                            }
+                        },
+                        onPickLocalLrcUri = { uri ->
+                            viewModel.applyLocalLyricUri(targetSong, uri) { msg ->
+                                uiScope.launch { snackbarHostState.showSnackbar(msg) }
+                            }
+                        },
+                        onResetAutoLyric = {
+                            viewModel.clearManualLyricOverride(targetSong) { msg ->
+                                uiScope.launch { snackbarHostState.showSnackbar(msg) }
+                            }
+                        },
+                        onDismiss = { lyricSearchTargetSong = null },
+                        backdrop = activeSheetBackdrop
+                    )
+                }
+
+                tagEditorTargetSong?.let { targetSong ->
+                    com.algermusic.player.ui.components.LocalTagEditorBottomSheet(
+                        song = targetSong,
+                        onSearchOnline = { kw -> viewModel.searchOnlineTagCandidates(kw) },
+                        onSave = { title, artist, album, lyric, coverUrl ->
+                            viewModel.saveLocalSongTags(
+                                song = targetSong,
+                                newTitle = title,
+                                newArtist = artist,
+                                newAlbum = album,
+                                newLyric = lyric,
+                                coverUrlToFetch = coverUrl
+                            ) { res ->
+                                uiScope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        res.fold(
+                                            onSuccess = { "标签已写入本地音频文件" },
+                                            onFailure = { "保存标签失败: ${it.message}" }
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        onDismiss = { tagEditorTargetSong = null },
+                        backdrop = activeSheetBackdrop
+                    )
+                }
+
+                addToPlaylistTargetSong?.let { targetSong ->
+                    com.algermusic.player.ui.components.AddToCustomPlaylistBottomSheet(
+                        song = targetSong,
+                        playlists = customPlaylists,
+                        onSelectPlaylist = { pl ->
+                            val added = viewModel.addSongToCustomPlaylist(pl.id, targetSong)
+                            uiScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (added) "已添加到「${pl.name}」" else "歌曲已在「${pl.name}」中"
+                                )
+                            }
+                        },
+                        onCreateAndAdd = { name ->
+                            viewModel.createCustomPlaylist(name, listOf(targetSong))
+                            uiScope.launch { snackbarHostState.showSnackbar("已新建歌单「$name」并加入歌曲") }
+                        },
+                        onDismiss = { addToPlaylistTargetSong = null },
+                        backdrop = activeSheetBackdrop
+                    )
+                }
+
+                if (showDuplicateDetectorSheet) {
+                    com.algermusic.player.ui.components.DuplicateSongsBottomSheet(
+                        onScanDuplicates = { includeNas -> viewModel.detectDuplicateSongs(includeNas) },
+                        onDeleteLocalSong = { s, cb ->
+                            viewModel.deleteLocalDuplicateSong(s) { ok ->
+                                uiScope.launch {
+                                    snackbarHostState.showSnackbar(if (ok) "已删除重复文件：${s.name}" else "删除失败（可能需要重新授权目录）")
+                                }
+                                cb(ok)
+                            }
+                        },
+                        onPlaySong = { s -> viewModel.playerController.playSong(s) },
+                        onDismiss = { showDuplicateDetectorSheet = false },
+                        backdrop = activeSheetBackdrop
+                    )
+                }
+
+                if (showDrivingMode) {
+                    com.algermusic.player.ui.components.DrivingModeOverlay(
+                        playerState = playerState,
+                        progressFlow = viewModel.playbackProgressFlow,
+                        isLiked = playerState.currentSong?.let { isFav(it.id) } == true,
+                        onTogglePlayPause = onTogglePlayPauseCb,
+                        onPrevious = onPreviousCb,
+                        onNext = onNextCb,
+                        onToggleLike = onToggleFavoriteCb,
+                        onCyclePlayMode = { viewModel.playerController.cyclePlayMode() },
+                        onExit = { showDrivingMode = false }
                     )
                 }
 

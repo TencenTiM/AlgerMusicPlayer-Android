@@ -126,6 +126,8 @@ class PlayerController(
     private val failedPlatformsForCurrentSong = mutableSetOf<String>()
     private var currentFallbackAttempts = 0
     private var positionTickerJob: Job? = null
+    private var crossfadeJob: Job? = null
+    private var crossfadeTriggeredForSongId: String? = null
     private var sleepTimerJob: Job? = null
     private var lastSleepEndTimeMs: Long? = null
     private var suppressAutoAdvance = false
@@ -145,6 +147,7 @@ class PlayerController(
         eqProcessor.applyConfig(settings.equalizer)
         val savedQueue = settingsRepo.loadSavedQueue()
         val restoredSong = settings.lastPlayedSong ?: savedQueue.firstOrNull()
+        applyCurrentAudioEnhancements(restoredSong)
         val restoredPos = if (restoredSong != null) settings.lastPlayedPositionMs else 0L
         val restoredDuration = restoredSong?.durationMs ?: 0L
 
@@ -659,6 +662,22 @@ class PlayerController(
                         durationMs = dur,
                         activeLineIndex = activeIdx
                     )
+                    val fadeSec = settingsRepo.currentSettings.crossfadeDurationSec.coerceIn(0, 8)
+                    val songId = curState.currentSong?.id
+                    if (fadeSec > 0 && dur > 15_000L && !songId.isNullOrBlank()) {
+                        val fadeMs = fadeSec * 1000L
+                        val remaining = dur - pos
+                        if (remaining in 1L..fadeMs) {
+                            val ratio = (remaining.toFloat() / fadeMs.toFloat()).coerceIn(0.05f, 1.0f)
+                            mc.volume = ratio
+                            if (remaining <= 220L && crossfadeTriggeredForSongId != songId && !suppressAutoAdvance) {
+                                crossfadeTriggeredForSongId = songId
+                                onSongEndedNaturally()
+                            }
+                        } else if (crossfadeJob?.isActive != true && mc.volume < 0.99f) {
+                            mc.volume = 1.0f
+                        }
+                    }
                 }
                 delay(50L)
             }
@@ -787,6 +806,9 @@ class PlayerController(
                         )
                     }
                     val mc = ensureMediaController() ?: return
+                    applyCurrentAudioEnhancements(enrichedSong)
+                    crossfadeJob?.cancel()
+                    crossfadeTriggeredForSongId = null
                     suppressAutoAdvance = true
                     val item = buildMediaItem(enrichedSong, resolved.url)
                     if (initialSeekMs > 0L) {
@@ -795,8 +817,27 @@ class PlayerController(
                         mc.setMediaItem(item)
                     }
                     mc.playbackParameters = PlaybackParameters(_uiState.value.playbackRate)
+                    val fadeSec = settingsRepo.currentSettings.crossfadeDurationSec.coerceIn(0, 8)
+                    if (fadeSec > 0) {
+                        mc.volume = 0.05f
+                    } else {
+                        mc.volume = 1.0f
+                    }
                     mc.prepare()
                     mc.play()
+                    if (fadeSec > 0) {
+                        val fadeInMs = (fadeSec * 500L).coerceIn(450L, 3500L)
+                        crossfadeJob = scope.launch {
+                            val steps = 18
+                            val stepDelay = (fadeInMs / steps).coerceAtLeast(25L)
+                            for (i in 1..steps) {
+                                delay(stepDelay)
+                                val vol = 0.05f + 0.95f * (i.toFloat() / steps.toFloat())
+                                mc.volume = vol.coerceIn(0.05f, 1.0f)
+                            }
+                            mc.volume = 1.0f
+                        }
+                    }
                     suppressAutoAdvance = false
                     settingsRepo.updateSettings {
                         it.copy(lastPlayedSong = enrichedSong, lastPlayedPositionMs = initialSeekMs)
@@ -1471,11 +1512,19 @@ class PlayerController(
             .build()
 
         val uri = if (url.startsWith("/")) Uri.fromFile(File(url)) else Uri.parse(url)
-        return MediaItem.Builder()
+        val builder = MediaItem.Builder()
             .setMediaId(song.id)
             .setUri(uri)
             .setMediaMetadata(metadata)
-            .build()
+        if (song.clipStartMs > 0L || (song.clipEndMs != null && song.clipEndMs > song.clipStartMs)) {
+            val clipBuilder = MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(song.clipStartMs.coerceAtLeast(0L))
+            if (song.clipEndMs != null && song.clipEndMs > song.clipStartMs) {
+                clipBuilder.setEndPositionMs(song.clipEndMs)
+            }
+            builder.setClippingConfiguration(clipBuilder.build())
+        }
+        return builder.build()
     }
 
     fun pause() {
@@ -1817,6 +1866,64 @@ class PlayerController(
         eqProcessor.applyConfig(config)
         _uiState.update { it.copy(equalizerConfig = config) }
         settingsRepo.updateSettings { it.copy(equalizer = config) }
+    }
+
+    fun applyCurrentAudioEnhancements(song: SongItem? = _uiState.value.currentSong) {
+        val s = settingsRepo.currentSettings
+        eqProcessor.applyAudioEnhancements(
+            replayGainEnabled = s.replayGainEnabled,
+            replayGainPreampDb = s.replayGainPreampDb,
+            trackReplayGainDb = song?.replayGainDb,
+            monoAudio = s.monoAudioEnabled,
+            channelBalance = s.channelBalance
+        )
+    }
+
+    fun updateAudioEnhancements(
+        replayGainEnabled: Boolean? = null,
+        replayGainPreampDb: Float? = null,
+        monoAudioEnabled: Boolean? = null,
+        channelBalance: Float? = null
+    ) {
+        settingsRepo.updateSettings { cur ->
+            cur.copy(
+                replayGainEnabled = replayGainEnabled ?: cur.replayGainEnabled,
+                replayGainPreampDb = (replayGainPreampDb ?: cur.replayGainPreampDb).coerceIn(-6f, 6f),
+                monoAudioEnabled = monoAudioEnabled ?: cur.monoAudioEnabled,
+                channelBalance = (channelBalance ?: cur.channelBalance).coerceIn(-1f, 1f)
+            )
+        }
+        applyCurrentAudioEnhancements(_uiState.value.currentSong)
+    }
+
+    fun reloadCurrentLyric() {
+        val song = _uiState.value.currentSong ?: return
+        scope.launch {
+            val lyric = lyricService.getParsedLyric(song)
+            if (_uiState.value.currentSong?.id == song.id) {
+                _uiState.update { it.copy(parsedLyric = lyric) }
+                _playbackProgress.update { prog ->
+                    prog.copy(
+                        activeLineIndex = LyricService.findActiveLineIndex(
+                            lyric,
+                            prog.positionMs,
+                            _uiState.value.lyricOffsetMs
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateSongInQueueAndCurrent(updatedSong: SongItem) {
+        val cur = _uiState.value
+        val newQueue = cur.queue.map { if (it.id == updatedSong.id) updatedSong else it }
+        val newCurrent = if (cur.currentSong?.id == updatedSong.id) updatedSong else cur.currentSong
+        _uiState.update { it.copy(queue = newQueue, currentSong = newCurrent) }
+        settingsRepo.saveQueueAsync(newQueue)
+        if (newCurrent?.id == updatedSong.id) {
+            reloadCurrentLyric()
+        }
     }
 
     fun addToQueueNext(song: SongItem) {

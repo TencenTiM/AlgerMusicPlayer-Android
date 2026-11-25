@@ -957,6 +957,13 @@ class LyricService(
             return@withContext createFallbackLyric("", "暂无播放歌曲")
         }
 
+        // 0. 用户手动绑定/切换的歌词覆盖（最高优先级）
+        settingsRepo.getCustomLyricOverride(song.id)?.let { manualRaw ->
+            parseLocalLyric(song.id, manualRaw)?.let { return@withContext it }
+            val parsedManual = parseLyric(song.id, manualRaw)
+            if (parsedManual.lines.isNotEmpty()) return@withContext parsedManual
+        }
+
         // 1. 歌曲对象已携带内嵌歌词（本地优先）
         if (!song.embeddedLyric.isNullOrBlank()) {
             parseLocalLyric(song.id, song.embeddedLyric)?.let { return@withContext it }
@@ -1075,6 +1082,64 @@ class LyricService(
             cur
         }
         return if (changed) cached.copy(lines = cleaned, hasTranslation = hasTrans) else cached
+    }
+
+    suspend fun searchLyricCandidates(keyword: String): List<SongItem> = withContext(Dispatchers.IO) {
+        val kw = keyword.trim()
+        if (kw.isBlank()) return@withContext emptyList()
+        runCatching { apiClient.searchSongs(kw, limit = 15) }.getOrDefault(emptyList())
+    }
+
+    suspend fun fetchRawLyricBundleForCandidate(candidate: SongItem): Pair<String, ParsedLyric>? = withContext(Dispatchers.IO) {
+        val nid = candidate.numericId
+        if (nid <= 0L) return@withContext null
+        runCatching {
+            val raw = apiClient.getLyricRaw(nid)
+            val parsed = parseLyric(
+                songId = candidate.id,
+                lrc = raw.lrc,
+                tlrc = raw.tlrc,
+                romaLrc = raw.romaLrc,
+                yrc = raw.yrc
+            )
+            if (parsed.lines.isEmpty() || (parsed.lines.size == 1 && parsed.lines[0].text == "纯音乐，请欣赏")) {
+                return@runCatching null
+            }
+            val combinedRaw = buildString {
+                if (raw.lrc.isNotBlank()) append(raw.lrc)
+                else if (raw.yrc.isNotBlank()) append(raw.yrc)
+            }
+            if (combinedRaw.isBlank()) null else (combinedRaw to parsed)
+        }.getOrNull()
+    }
+
+    suspend fun readLyricTextFromUri(uri: Uri): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val bytes = stream.readBytes()
+                if (bytes.isEmpty()) return@use null
+                decodeTextBytesSmart(bytes)
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun decodeTextBytesSmart(bytes: ByteArray): String {
+        if (bytes.size >= 3 &&
+            bytes[0] == 0xEF.toByte() &&
+            bytes[1] == 0xBB.toByte() &&
+            bytes[2] == 0xBF.toByte()
+        ) {
+            return String(bytes, 3, bytes.size - 3, StandardCharsets.UTF_8)
+        }
+        return try {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (_: CharacterCodingException) {
+            runCatching { String(bytes, Charset.forName("GB18030")) }
+                .getOrDefault(String(bytes, StandardCharsets.UTF_8))
+        }
     }
 
     private suspend fun resolveLocalLyric(song: SongItem): ParsedLyric? {

@@ -228,6 +228,10 @@ fun PlayerScreen(
     onOpenSourceAndQuality: () -> Unit,
     onOpenComments: (SongItem) -> Unit,
     onOpenMv: ((Long) -> Unit)? = null,
+    onOpenAddToPlaylist: (SongItem) -> Unit = {},
+    onOpenTagEditor: (SongItem) -> Unit = {},
+    onOpenDrivingMode: () -> Unit = {},
+    onOpenLyricSearch: (SongItem) -> Unit = {},
     onSetRate: (Float) -> Unit,
     onOpenSleepTimer: () -> Unit,
     onToggleTranslation: () -> Unit,
@@ -577,6 +581,10 @@ fun PlayerScreen(
                 onOpenSleepTimer = onOpenSleepTimer,
                 onOpenSongInfo = { showSongInfoSheet = true },
                 onOpenPlayerStyleGallery = onOpenPlayerStyleGallery,
+                onOpenAddToPlaylist = onOpenAddToPlaylist,
+                onOpenTagEditor = onOpenTagEditor,
+                onOpenDrivingMode = onOpenDrivingMode,
+                onOpenLyricSearch = onOpenLyricSearch,
                 onToggleTranslation = onToggleTranslation,
                 lyricLayoutMode = lyricLayoutMode
             )
@@ -649,6 +657,10 @@ fun PlayerScreen(
                     onOpenSleepMenu = onOpenSleepTimer,
                     onOpenSongInfo = { showSongInfoSheet = true },
                     onOpenPlayerStyle = onOpenPlayerStyleGallery,
+                    onOpenAddToPlaylist = onOpenAddToPlaylist,
+                    onOpenTagEditor = onOpenTagEditor,
+                    onOpenDrivingMode = onOpenDrivingMode,
+                    onOpenLyricSearch = onOpenLyricSearch,
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
@@ -702,6 +714,7 @@ fun PlayerScreen(
                             onToggleTranslation = onToggleTranslation,
                             onToggleRomaji = onToggleRomaji,
                             onAdjustOffset = onAdjustLyricOffset,
+                            onOpenLyricSearch = { song?.let(onOpenLyricSearch) },
                             onTapCover = { showLyricMode = false }
                         )
                     }
@@ -1497,6 +1510,10 @@ private fun PlayerTopRightAction(
     onOpenSleepMenu: () -> Unit,
     onOpenSongInfo: () -> Unit,
     onOpenPlayerStyle: () -> Unit,
+    onOpenAddToPlaylist: (SongItem) -> Unit = {},
+    onOpenTagEditor: (SongItem) -> Unit = {},
+    onOpenDrivingMode: () -> Unit = {},
+    onOpenLyricSearch: (SongItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val timerMs by sleepTimerFlow.collectAsState()
@@ -1529,9 +1546,15 @@ private fun PlayerTopRightAction(
                         add(AlgerGlassMenuItem(label = "音质与音源", onClick = onOpenSourceAndQuality))
                         add(AlgerGlassMenuItem(label = "播放器样式", onClick = onOpenPlayerStyle))
                         if (song != null) {
+                            add(AlgerGlassMenuItem(label = "添加到自建歌单", onClick = { onOpenAddToPlaylist(song) }))
+                            add(AlgerGlassMenuItem(label = "搜索 / 切换歌词", onClick = { onOpenLyricSearch(song) }))
                             add(AlgerGlassMenuItem(label = "歌曲信息", onClick = onOpenSongInfo))
+                            if (song.isLocalSong && song.cueSheetPath == null) {
+                                add(AlgerGlassMenuItem(label = "编辑音频标签", onClick = { onOpenTagEditor(song) }))
+                            }
                         }
-                        add(AlgerGlassMenuItem(label = "均衡器音效", onClick = onOpenEqualizer))
+                        add(AlgerGlassMenuItem(label = "均衡器与音效", onClick = onOpenEqualizer))
+                        add(AlgerGlassMenuItem(label = "驾驶模式", onClick = onOpenDrivingMode))
                         if (song != null && song.numericId > 0L) {
                             add(AlgerGlassMenuItem(label = "歌曲评论", onClick = { onOpenComments(song) }))
                         }
@@ -2080,6 +2103,7 @@ private fun LyricViewSection(
     onToggleTranslation: () -> Unit,
     onToggleRomaji: () -> Unit,
     onAdjustOffset: (Int) -> Unit,
+    onOpenLyricSearch: () -> Unit = {},
     onTapCover: () -> Unit
 ) {
     val lines = playerState.parsedLyric.lines
@@ -2250,6 +2274,7 @@ private fun LyricViewSection(
                 LyricToolChip(label = "+0.5s", selected = false, activeAccent = activeAccent, fgSecondary = fgSecondary) {
                     onAdjustOffset(500)
                 }
+                LyricToolChip(label = "换词", selected = false, activeAccent = activeAccent, fgSecondary = fgSecondary, onClick = onOpenLyricSearch)
                 LyricToolChip(label = "封面", selected = true, activeAccent = activeAccent, fgSecondary = fgSecondary, onClick = onTapCover)
             }
         }

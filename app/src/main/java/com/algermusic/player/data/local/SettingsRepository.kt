@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.algermusic.player.model.AppSettings
 import com.algermusic.player.model.CompletedDownloadItem
+import com.algermusic.player.model.CustomPlaylist
 import com.algermusic.player.model.PlaylistItem
 import com.algermusic.player.model.SongItem
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +57,12 @@ class SettingsRepository(private val context: Context) {
     private val _recentHistory = MutableStateFlow<List<SongItem>>(emptyList())
     val recentHistoryFlow: StateFlow<List<SongItem>> = _recentHistory.asStateFlow()
 
+    private val _customPlaylists = MutableStateFlow<List<CustomPlaylist>>(emptyList())
+    val customPlaylistsFlow: StateFlow<List<CustomPlaylist>> = _customPlaylists.asStateFlow()
+
+    private val _customLyricOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
+    val customLyricOverridesFlow: StateFlow<Map<String, String>> = _customLyricOverrides.asStateFlow()
+
     val lyricCacheDir: File by lazy {
         File(context.cacheDir, "lyrics").apply { mkdirs() }
     }
@@ -70,6 +77,14 @@ class SettingsRepository(private val context: Context) {
 
     private val localSongsCacheFile: File by lazy {
         File(context.filesDir, "local_songs_cache.json")
+    }
+
+    private val customPlaylistsFile: File by lazy {
+        File(context.filesDir, "custom_playlists.json")
+    }
+
+    private val customLyricsFile: File by lazy {
+        File(context.filesDir, "custom_lyrics.json")
     }
 
     suspend fun loadCachedLocalSongs(): List<SongItem> {
@@ -115,6 +130,22 @@ class SettingsRepository(private val context: Context) {
         prefs[keyRecentHistory]?.let { raw ->
             runCatching { json.decodeFromString<List<SongItem>>(raw) }
                 .onSuccess { _recentHistory.value = it }
+        }
+        runCatching {
+            if (customPlaylistsFile.exists()) {
+                val raw = customPlaylistsFile.readText(Charsets.UTF_8)
+                if (raw.isNotBlank()) {
+                    _customPlaylists.value = json.decodeFromString<List<CustomPlaylist>>(raw)
+                }
+            }
+        }
+        runCatching {
+            if (customLyricsFile.exists()) {
+                val raw = customLyricsFile.readText(Charsets.UTF_8)
+                if (raw.isNotBlank()) {
+                    _customLyricOverrides.value = json.decodeFromString<Map<String, String>>(raw)
+                }
+            }
         }
     }
 
@@ -248,5 +279,162 @@ class SettingsRepository(private val context: Context) {
                 prefs[keyCompletedDownloads] = encoded
             }
         }
+    }
+
+    // ==================== 本地自建跨源混合歌单 ====================
+
+    private fun persistCustomPlaylistsAsync(list: List<CustomPlaylist>) {
+        scope.launch {
+            runCatching {
+                val encoded = json.encodeToString(list)
+                val tmp = File(context.filesDir, "custom_playlists.json.tmp")
+                tmp.writeText(encoded, Charsets.UTF_8)
+                if (!tmp.renameTo(customPlaylistsFile)) {
+                    customPlaylistsFile.writeText(encoded, Charsets.UTF_8)
+                    tmp.delete()
+                }
+            }
+        }
+    }
+
+    fun createCustomPlaylist(
+        name: String,
+        description: String = "",
+        initialSongs: List<SongItem> = emptyList()
+    ): CustomPlaylist {
+        val now = System.currentTimeMillis()
+        val created = CustomPlaylist(
+            name = name.trim().ifBlank { "未命名歌单" },
+            description = description.trim(),
+            songs = initialSongs.distinctBy { it.id },
+            createdAtMs = now,
+            updatedAtMs = now
+        )
+        val updated = listOf(created) + _customPlaylists.value
+        _customPlaylists.value = updated
+        persistCustomPlaylistsAsync(updated)
+        return created
+    }
+
+    fun renameCustomPlaylist(playlistId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isBlank()) return
+        val updated = _customPlaylists.value.map {
+            if (it.id == playlistId) it.copy(name = trimmed, updatedAtMs = System.currentTimeMillis()) else it
+        }
+        _customPlaylists.value = updated
+        persistCustomPlaylistsAsync(updated)
+    }
+
+    fun deleteCustomPlaylist(playlistId: String) {
+        val updated = _customPlaylists.value.filterNot { it.id == playlistId }
+        _customPlaylists.value = updated
+        persistCustomPlaylistsAsync(updated)
+    }
+
+    fun addSongToCustomPlaylist(playlistId: String, song: SongItem): Boolean {
+        var added = false
+        val updated = _customPlaylists.value.map { pl ->
+            if (pl.id == playlistId) {
+                if (pl.songs.any { it.id == song.id }) {
+                    pl
+                } else {
+                    added = true
+                    pl.copy(songs = listOf(song) + pl.songs, updatedAtMs = System.currentTimeMillis())
+                }
+            } else pl
+        }
+        if (added) {
+            _customPlaylists.value = updated
+            persistCustomPlaylistsAsync(updated)
+        }
+        return added
+    }
+
+    fun addSongsToCustomPlaylist(playlistId: String, songs: List<SongItem>): Int {
+        var addedCount = 0
+        val updated = _customPlaylists.value.map { pl ->
+            if (pl.id == playlistId) {
+                val existing = pl.songs.map { it.id }.toHashSet()
+                val toAdd = songs.filter { existing.add(it.id) }
+                addedCount = toAdd.size
+                if (toAdd.isNotEmpty()) {
+                    pl.copy(songs = pl.songs + toAdd, updatedAtMs = System.currentTimeMillis())
+                } else pl
+            } else pl
+        }
+        if (addedCount > 0) {
+            _customPlaylists.value = updated
+            persistCustomPlaylistsAsync(updated)
+        }
+        return addedCount
+    }
+
+    fun removeSongFromCustomPlaylist(playlistId: String, songId: String) {
+        val updated = _customPlaylists.value.map { pl ->
+            if (pl.id == playlistId) {
+                pl.copy(
+                    songs = pl.songs.filterNot { it.id == songId },
+                    updatedAtMs = System.currentTimeMillis()
+                )
+            } else pl
+        }
+        _customPlaylists.value = updated
+        persistCustomPlaylistsAsync(updated)
+    }
+
+    // ==================== 手动绑定/切换歌词覆盖 ====================
+
+    private fun persistCustomLyricsAsync(map: Map<String, String>) {
+        scope.launch {
+            runCatching {
+                val encoded = json.encodeToString(map)
+                val tmp = File(context.filesDir, "custom_lyrics.json.tmp")
+                tmp.writeText(encoded, Charsets.UTF_8)
+                if (!tmp.renameTo(customLyricsFile)) {
+                    customLyricsFile.writeText(encoded, Charsets.UTF_8)
+                    tmp.delete()
+                }
+            }
+        }
+    }
+
+    fun getCustomLyricOverride(songId: String): String? =
+        _customLyricOverrides.value[songId]?.takeIf { it.isNotBlank() }
+
+    fun setCustomLyricOverride(songId: String, rawLrc: String) {
+        if (songId.isBlank() || rawLrc.isBlank()) return
+        val updated = _customLyricOverrides.value + (songId to rawLrc)
+        _customLyricOverrides.value = updated
+        persistCustomLyricsAsync(updated)
+    }
+
+    fun clearCustomLyricOverride(songId: String) {
+        if (!_customLyricOverrides.value.containsKey(songId)) return
+        val updated = _customLyricOverrides.value - songId
+        _customLyricOverrides.value = updated
+        persistCustomLyricsAsync(updated)
+    }
+
+    // ==================== 备份恢复整表替换 ====================
+
+    suspend fun replaceAllBackupData(
+        settings: AppSettings,
+        favorites: List<SongItem>,
+        favoritePlaylists: List<PlaylistItem>,
+        customPlaylists: List<CustomPlaylist>,
+        customLyricOverrides: Map<String, String>
+    ) {
+        saveSettings(settings)
+        _favorites.value = favorites
+        _favoritePlaylists.value = favoritePlaylists
+        _customPlaylists.value = customPlaylists
+        _customLyricOverrides.value = customLyricOverrides
+        context.algerDataStore.edit { prefs ->
+            prefs[keyFavorites] = json.encodeToString(favorites)
+            prefs[keyFavoritePlaylists] = json.encodeToString(favoritePlaylists)
+        }
+        persistCustomPlaylistsAsync(customPlaylists)
+        persistCustomLyricsAsync(customLyricOverrides)
     }
 }

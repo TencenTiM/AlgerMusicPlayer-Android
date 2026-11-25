@@ -1,5 +1,8 @@
 package com.algermusic.player.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,11 +30,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LiveTv
@@ -39,6 +44,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -46,9 +52,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -152,11 +164,20 @@ fun LibraryScreen(
     onOpenLxScripts: () -> Unit,
     onOpenPlaylist: (Long) -> Unit,
     onOpenCollectedPlaylist: (PlaylistItem) -> Unit = {},
-    onToggleCollectPlaylist: (PlaylistItem) -> Unit = {}
+    onToggleCollectPlaylist: (PlaylistItem) -> Unit = {},
+    customPlaylists: List<com.algermusic.player.model.CustomPlaylist> = emptyList(),
+    onCreateCustomPlaylist: (String) -> Unit = {},
+    onOpenCustomPlaylist: (com.algermusic.player.model.CustomPlaylist) -> Unit = {},
+    onImportM3u8Uri: (Uri) -> Unit = {}
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val navBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val tabletMetrics = com.algermusic.player.ui.components.rememberTabletLayoutMetrics()
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    val m3uImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) onImportM3u8Uri(uri) }
 
     Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
@@ -512,6 +533,121 @@ fun LibraryScreen(
         }
 
         // 个人歌单（真懒加载 itemsIndexed，避免将全部歌单塞入单个大卡片导致掉帧抖动）
+        // 自建跨源混合歌单（支持本地 + NAS + 在线混排与 M3U8 导入导出）
+        item(key = "lib_custom_playlists_header") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "自建混合歌单",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "${customPlaylists.size} 个 · 本地 / NAS / 在线混排",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { m3uImportLauncher.launch(arrayOf("audio/x-mpegurl", "audio/mpegurl", "text/*", "*/*")) }) {
+                        Icon(Icons.Filled.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("导入 M3U", fontSize = 12.sp)
+                    }
+                    TextButton(onClick = { showCreatePlaylistDialog = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text("新建", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        if (customPlaylists.isNotEmpty()) {
+            val cplLastIdx = customPlaylists.lastIndex
+            itemsIndexed(
+                items = customPlaylists,
+                key = { _, pl -> "cpl_${pl.id}" },
+                contentType = { _, _ -> "custom_playlist_row" }
+            ) { idx, pl ->
+                val topRadius = if (idx == 0) 18.dp else 0.dp
+                val bottomRadius = if (idx == cplLastIdx) 18.dp else 0.dp
+                val rowShape = RoundedCornerShape(
+                    topStart = topRadius,
+                    topEnd = topRadius,
+                    bottomStart = bottomRadius,
+                    bottomEnd = bottomRadius
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = if (idx == cplLastIdx) 16.dp else 0.dp)
+                        .clip(rowShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        .clickable { onOpenCustomPlaylist(pl) }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                start = 12.dp,
+                                end = 12.dp,
+                                top = if (idx == 0) 12.dp else 8.dp,
+                                bottom = if (idx == cplLastIdx) 12.dp else 8.dp
+                            ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(54.dp)
+                                .border(0.6.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(11.dp))
+                        ) {
+                            CoverArtImage(
+                                model = pl.effectiveCoverUrl,
+                                contentDescription = pl.name,
+                                modifier = Modifier.fillMaxSize(),
+                                cornerRadius = 11.dp,
+                                decodeSizePx = 160
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                pl.name,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${pl.songs.size} 首歌曲 · 本地跨源歌单",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                        Icon(
+                            Icons.Filled.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (idx < cplLastIdx) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 78.dp, end = 12.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
+                }
+            }
+        }
+
         if (authState.userPlaylists.isNotEmpty()) {
             item(key = "lib_playlists_header") {
                 Box(modifier = Modifier.padding(bottom = 10.dp)) {
@@ -607,6 +743,37 @@ fun LibraryScreen(
             }
         }
     }
+    }
+
+    if (showCreatePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            title = { Text("新建混合歌单") },
+            text = {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    placeholder = { Text("例如：车载无损精选") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val trimmed = newPlaylistName.trim()
+                    if (trimmed.isNotBlank()) {
+                        onCreateCustomPlaylist(trimmed)
+                        newPlaylistName = ""
+                        showCreatePlaylistDialog = false
+                    }
+                }) {
+                    Text("创建", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) { Text("取消") }
+            }
+        )
     }
 }
 

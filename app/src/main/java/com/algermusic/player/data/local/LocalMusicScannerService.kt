@@ -13,6 +13,8 @@ import com.algermusic.player.model.AudioFormatSupport
 import com.algermusic.player.model.LocalFolderNode
 import com.algermusic.player.model.MusicQualityLevel
 import com.algermusic.player.model.SongItem
+import com.kyant.taglib.Picture
+import com.kyant.taglib.PropertyMap
 import com.kyant.taglib.TagLib
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -552,11 +554,95 @@ class LocalMusicScannerService(
         onProgress: (Int) -> Unit
     ) {
         val children = dir.listFiles()
+        val cueDocs = children.filter { it.isFile && it.name?.endsWith(".cue", ignoreCase = true) == true }
+        val audioDocsByName = HashMap<String, DocumentFile>()
+        val audioDocsByStem = HashMap<String, DocumentFile>()
+        for (doc in children) {
+            if (!doc.isFile) continue
+            val name = doc.name ?: continue
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext in SUPPORTED_EXTENSIONS) {
+                audioDocsByName[name.lowercase()] = doc
+                audioDocsByStem[name.substringBeforeLast('.').lowercase()] = doc
+            }
+        }
+
+        // 先解析当前目录中的 .cue 分轨表，自动拆分整轨无损专辑
+        val cueConsumedAudioNames = HashSet<String>()
+        for (cueDoc in cueDocs) {
+            val cueName = cueDoc.name ?: continue
+            val cueText = runCatching {
+                context.contentResolver.openInputStream(cueDoc.uri)?.use { stream ->
+                    CueSheetParser.decodeCueBytes(stream.readBytes())
+                }
+            }.getOrNull() ?: continue
+            val parsed = CueSheetParser.parse(cueText)
+            if (parsed.tracks.isEmpty()) continue
+
+            val cueStemLower = cueName.substringBeforeLast('.').lowercase()
+            val tracksByAudio = parsed.tracks.groupBy { it.audioFileName.lowercase() }
+            for ((refFileNameLower, cueTracks) in tracksByAudio) {
+                val targetAudio = audioDocsByName[refFileNameLower]
+                    ?: audioDocsByStem[refFileNameLower.substringBeforeLast('.')]
+                    ?: audioDocsByStem[cueStemLower]
+                    ?: continue
+                val audioName = targetAudio.name ?: continue
+                val size = targetAudio.length()
+                if (size <= 1024L) continue
+                cueConsumedAudioNames.add(audioName.lowercase())
+
+                val fullPath = normalizeFolderPath("$virtualDirPath/$audioName")
+                val cuePath = normalizeFolderPath("$virtualDirPath/$cueName")
+                val baseSong = parseAudioFromUri(
+                    contentUri = targetAudio.uri.toString(),
+                    displayPath = fullPath,
+                    fileName = audioName,
+                    fileSize = size,
+                    modifiedTimeMs = targetAudio.lastModified(),
+                    fallbackTitle = parsed.albumTitle,
+                    fallbackArtist = parsed.albumPerformer,
+                    fallbackAlbum = parsed.albumTitle,
+                    fallbackDurationMs = 0L
+                )
+                val reParsed = if (baseSong.durationMs > 0L) {
+                    CueSheetParser.parse(cueText, totalAudioDurationMs = baseSong.durationMs)
+                        .tracks.filter { it.audioFileName.equals(cueTracks.first().audioFileName, ignoreCase = true) }
+                } else {
+                    cueTracks
+                }
+
+                for (ct in reParsed) {
+                    val trackKey = "${audioName.lowercase()}|$size|cue_${ct.trackNumber}_${ct.startMs}"
+                    if (!seenKeys.add(trackKey)) continue
+                    val trackDur = when {
+                        ct.endMs != null && ct.endMs > ct.startMs -> ct.endMs - ct.startMs
+                        baseSong.durationMs > ct.startMs -> baseSong.durationMs - ct.startMs
+                        else -> 0L
+                    }
+                    val idHash = sha256HexPrefix("$fullPath#cue_${ct.trackNumber}_${ct.startMs}".lowercase().toByteArray(Charsets.UTF_8), 16)
+                    output.add(
+                        baseSong.copy(
+                            id = "local_cue_$idHash",
+                            name = ct.title,
+                            artists = listOf(ArtistItem(name = ct.performer)),
+                            album = baseSong.album.copy(name = ct.album.ifBlank { baseSong.album.name }),
+                            durationMs = trackDur,
+                            clipStartMs = ct.startMs,
+                            clipEndMs = ct.endMs,
+                            cueSheetPath = cuePath
+                        )
+                    )
+                    if (output.size % 10 == 0) onProgress(output.size)
+                }
+            }
+        }
+
         for (doc in children) {
             val name = doc.name ?: continue
             if (doc.isDirectory) {
                 scanDocumentTree(doc, "$virtualDirPath/$name", output, seenKeys, onProgress)
             } else if (doc.isFile) {
+                if (name.lowercase() in cueConsumedAudioNames) continue
                 val ext = name.substringAfterLast('.', "").lowercase()
                 if (ext !in SUPPORTED_EXTENSIONS) continue
                 val size = doc.length()
@@ -616,6 +702,7 @@ class LocalMusicScannerService(
         var embeddedLyric: String? = null
         var coverPath = ""
         var bitrateKbps = 0
+        var replayGainDb: Float? = null
 
         runCatching {
             val uri = Uri.parse(contentUri)
@@ -647,6 +734,8 @@ class LocalMusicScannerService(
 
                     val lrcRaw = map["LYRICS"]?.firstOrNull() ?: map["UNSYNCEDLYRICS"]?.firstOrNull()
                     repairLegacyChineseText(lrcRaw).takeIf { it.isNotBlank() }?.let { embeddedLyric = it }
+
+                    replayGainDb = parseReplayGainFromTagMap(map)
 
                     val frontPic = meta.pictures.firstOrNull { it.pictureType == "Front Cover" }
                         ?: meta.pictures.firstOrNull()
@@ -691,8 +780,135 @@ class LocalMusicScannerService(
             resolvedPlatform = "local",
             playingQualityBadge = qualityBadge,
             playingQualityLevel = qualityLevel,
-            playingBitrateKbps = bitrateKbps
+            playingBitrateKbps = bitrateKbps,
+            replayGainDb = replayGainDb
         )
+    }
+
+    private fun parseReplayGainFromTagMap(map: Map<String, Array<String>>): Float? {
+        val trackRaw = map["REPLAYGAIN_TRACK_GAIN"]?.firstOrNull()
+            ?: map["REPLAYGAIN_ALBUM_GAIN"]?.firstOrNull()
+        if (!trackRaw.isNullOrBlank()) {
+            val num = trackRaw.trim()
+                .replace("db", "", ignoreCase = true)
+                .trim()
+                .toFloatOrNull()
+            if (num != null && num.isFinite()) return num.coerceIn(-24f, 18f)
+        }
+        val r128Raw = map["R128_TRACK_GAIN"]?.firstOrNull()
+            ?: map["R128_ALBUM_GAIN"]?.firstOrNull()
+        if (!r128Raw.isNullOrBlank()) {
+            val q78 = r128Raw.trim().toIntOrNull()
+            if (q78 != null) {
+                // Opus R128 参考电平为 -23 LUFS，加 +5 dB 对齐 ReplayGain -18 LUFS
+                return (q78 / 256f + 5f).coerceIn(-24f, 18f)
+            }
+        }
+        return null
+    }
+
+    /**
+     * 使用 TagLib 原地编辑本地音频元数据（歌名、歌手、专辑、内嵌歌词与封面）。
+     */
+    suspend fun updateLocalSongTags(
+        song: SongItem,
+        newTitle: String,
+        newArtist: String,
+        newAlbum: String,
+        newLyric: String? = null,
+        newCoverBytes: ByteArray? = null
+    ): Result<SongItem> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanTitle = newTitle.trim().ifBlank { song.name }
+            val cleanArtist = newArtist.trim().ifBlank { "未知歌手" }
+            val cleanAlbum = newAlbum.trim().ifBlank { "未知专辑" }
+            val uriStr = song.localContentUri?.takeIf { it.isNotBlank() }
+                ?: song.localFilePath?.takeIf { File(it).exists() }?.let { Uri.fromFile(File(it)).toString() }
+                ?: throw IllegalStateException("未找到可写入的本地音频路径")
+
+            val uri = Uri.parse(uriStr)
+            val pfd = if (uri.scheme.equals("file", ignoreCase = true)) {
+                android.os.ParcelFileDescriptor.open(
+                    File(uri.path!!),
+                    android.os.ParcelFileDescriptor.MODE_READ_WRITE
+                )
+            } else {
+                context.contentResolver.openFileDescriptor(uri, "rw")
+            } ?: throw IllegalStateException("系统未授予该文件的写入权限（可通过 SAF 重新授权所在目录）")
+
+            pfd.use { fd ->
+                val existingMeta = runCatching { TagLib.getMetadata(fd.dup().detachFd(), readPictures = false) }.getOrNull()
+                val propMap = PropertyMap()
+                existingMeta?.propertyMap?.forEach { (k, v) -> propMap[k] = v }
+                propMap["TITLE"] = arrayOf(cleanTitle)
+                propMap["ARTIST"] = cleanArtist.split("/", "、").map { it.trim() }.filter { it.isNotBlank() }
+                    .ifEmpty { listOf(cleanArtist) }.toTypedArray()
+                propMap["ALBUM"] = arrayOf(cleanAlbum)
+                if (newLyric != null) {
+                    if (newLyric.isBlank()) {
+                        propMap.remove("LYRICS")
+                    } else {
+                        propMap["LYRICS"] = arrayOf(newLyric)
+                    }
+                }
+                val savedOk = TagLib.savePropertyMap(fd.dup().detachFd(), propMap)
+                if (!savedOk) {
+                    throw IllegalStateException("该音频格式暂不支持写入标签")
+                }
+
+                if (newCoverBytes != null && newCoverBytes.isNotEmpty()) {
+                    val pic = Picture(
+                        data = newCoverBytes,
+                        description = "Cover",
+                        pictureType = "Front Cover",
+                        mimeType = "image/jpeg"
+                    )
+                    TagLib.savePictures(fd.dup().detachFd(), arrayOf(pic))
+                }
+            }
+
+            var updatedCover = song.picUrl
+            if (newCoverBytes != null && newCoverBytes.isNotEmpty()) {
+                val hash = sha256HexPrefix(newCoverBytes, 16)
+                val coverFile = File(settingsRepo.coverCacheDir, "$hash.jpg")
+                coverFile.writeBytes(newCoverBytes)
+                updatedCover = Uri.fromFile(coverFile).toString()
+            }
+
+            song.copy(
+                name = cleanTitle,
+                artists = cleanArtist.split("/", "、").map { it.trim() }.filter { it.isNotBlank() }
+                    .ifEmpty { listOf(cleanArtist) }.map { ArtistItem(name = it) },
+                album = song.album.copy(name = cleanAlbum, picUrl = updatedCover),
+                picUrl = updatedCover,
+                embeddedLyric = newLyric?.takeIf { it.isNotBlank() } ?: song.embeddedLyric
+            )
+        }
+    }
+
+    /**
+     * 删除本地音频文件（供重复歌曲清理使用）。
+     */
+    suspend fun deleteLocalSongFile(song: SongItem): Boolean = withContext(Dispatchers.IO) {
+        if (song.cueSheetPath != null) return@withContext false
+        val uriStr = song.localContentUri
+        if (!uriStr.isNullOrBlank() && uriStr.startsWith("content://", ignoreCase = true)) {
+            val uri = Uri.parse(uriStr)
+            val deletedDoc = runCatching {
+                DocumentFile.fromSingleUri(context, uri)?.delete() == true
+            }.getOrDefault(false)
+            if (deletedDoc) return@withContext true
+            val deletedResolver = runCatching {
+                context.contentResolver.delete(uri, null, null) > 0
+            }.getOrDefault(false)
+            if (deletedResolver) return@withContext true
+        }
+        val path = song.localFilePath
+        if (!path.isNullOrBlank()) {
+            val f = File(path)
+            if (f.exists() && f.delete()) return@withContext true
+        }
+        false
     }
 
     /**

@@ -29,8 +29,19 @@ class TenBandEqualizerAudioProcessor : BaseAudioProcessor() {
         val version: Long,
         val enabled: Boolean,
         val preampLinear: Float,
-        val bandGains: FloatArray
-    )
+        val bandGains: FloatArray,
+        val replayGainLinear: Float = 1.0f,
+        val monoAudio: Boolean = false,
+        val leftGain: Float = 1.0f,
+        val rightGain: Float = 1.0f
+    ) {
+        val hasAnyEffect: Boolean
+            get() = enabled ||
+                abs(replayGainLinear - 1.0f) > 0.001f ||
+                monoAudio ||
+                abs(leftGain - 1.0f) > 0.001f ||
+                abs(rightGain - 1.0f) > 0.001f
+    }
 
     private class BiQuadFilter {
         var b0 = 1.0
@@ -115,11 +126,40 @@ class TenBandEqualizerAudioProcessor : BaseAudioProcessor() {
             config.bandGains.getOrElse(idx) { 0f }.coerceIn(-12f, 12f)
         }
         val preamp = 10f.pow(config.preampDb.coerceIn(-12f, 12f) / 20f)
-        snapshot = EqSnapshot(
+        val prev = snapshot
+        snapshot = prev.copy(
             version = versionGenerator.incrementAndGet(),
             enabled = config.isEnabled,
             preampLinear = preamp,
             bandGains = gains
+        )
+    }
+
+    /**
+     * 动态更新响度均衡（ReplayGain）、单声道合并与左右声道平衡参数（热生效，无需重启管线）。
+     */
+    fun applyAudioEnhancements(
+        replayGainEnabled: Boolean,
+        replayGainPreampDb: Float,
+        trackReplayGainDb: Float?,
+        monoAudio: Boolean,
+        channelBalance: Float
+    ) {
+        val rgDb = if (replayGainEnabled) {
+            ((trackReplayGainDb ?: 0f) + replayGainPreampDb).coerceIn(-18f, 12f)
+        } else {
+            0f
+        }
+        val rgLinear = 10f.pow(rgDb / 20f)
+        val clampedBal = channelBalance.coerceIn(-1f, 1f)
+        val leftG = if (clampedBal > 0f) (1f - clampedBal).coerceIn(0f, 1f) else 1f
+        val rightG = if (clampedBal < 0f) (1f + clampedBal).coerceIn(0f, 1f) else 1f
+        val prev = snapshot
+        snapshot = prev.copy(
+            replayGainLinear = rgLinear,
+            monoAudio = monoAudio,
+            leftGain = leftG,
+            rightGain = rightG
         )
     }
 
@@ -171,40 +211,84 @@ class TenBandEqualizerAudioProcessor : BaseAudioProcessor() {
 
         val outBuffer = replaceOutputBuffer(remaining)
         var maxAbs = 0f
+        val rgLinear = currentSnap.replayGainLinear
+        val monoDownmix = currentSnap.monoAudio && channels == 2
+        val leftBal = currentSnap.leftGain
+        val rightBal = currentSnap.rightGain
 
         if (encoding == C.ENCODING_PCM_16BIT) {
-            var ch = 0
-            while (inputBuffer.remaining() >= 2) {
-                val rawSample = inputBuffer.getShort()
-                var sample = rawSample / 32768f
-
-                if (currentSnap.enabled) {
-                    sample = processSampleThroughEq(sample, ch, currentSnap.preampLinear)
+            val frameBytes = channels * 2
+            while (inputBuffer.remaining() >= frameBytes) {
+                if (monoDownmix) {
+                    val lRaw = inputBuffer.getShort() / 32768f
+                    val rRaw = inputBuffer.getShort() / 32768f
+                    val mono = (lRaw + rRaw) * 0.5f
+                    var l = mono * rgLinear
+                    var r = mono * rgLinear
+                    if (currentSnap.enabled) {
+                        l = processSampleThroughEq(l, 0, currentSnap.preampLinear)
+                        r = processSampleThroughEq(r, 1, currentSnap.preampLinear)
+                    }
+                    l = softLimit(l * leftBal)
+                    r = softLimit(r * rightBal)
+                    val absL = abs(l)
+                    val absR = abs(r)
+                    if (absL > maxAbs) maxAbs = absL
+                    if (absR > maxAbs) maxAbs = absR
+                    outBuffer.putShort((l.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                    outBuffer.putShort((r.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                } else {
+                    for (ch in 0 until channels) {
+                        var sample = (inputBuffer.getShort() / 32768f) * rgLinear
+                        if (currentSnap.enabled) {
+                            sample = processSampleThroughEq(sample, ch, currentSnap.preampLinear)
+                        }
+                        if (channels == 2) {
+                            sample *= if (ch == 0) leftBal else rightBal
+                        }
+                        sample = softLimit(sample)
+                        val absVal = abs(sample)
+                        if (absVal > maxAbs) maxAbs = absVal
+                        outBuffer.putShort((sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                    }
                 }
-
-                val absVal = abs(sample)
-                if (absVal > maxAbs) maxAbs = absVal
-
-                val outShort = (sample.coerceIn(-1f, 1f) * 32767f).toInt().toShort()
-                outBuffer.putShort(outShort)
-
-                ch++
-                if (ch >= channels) ch = 0
             }
         } else if (encoding == C.ENCODING_PCM_FLOAT) {
-            var ch = 0
-            while (inputBuffer.remaining() >= 4) {
-                var sample = inputBuffer.getFloat()
-                if (currentSnap.enabled) {
-                    sample = processSampleThroughEq(sample, ch, currentSnap.preampLinear)
+            val frameBytes = channels * 4
+            while (inputBuffer.remaining() >= frameBytes) {
+                if (monoDownmix) {
+                    val lRaw = inputBuffer.getFloat()
+                    val rRaw = inputBuffer.getFloat()
+                    val mono = (lRaw + rRaw) * 0.5f
+                    var l = mono * rgLinear
+                    var r = mono * rgLinear
+                    if (currentSnap.enabled) {
+                        l = processSampleThroughEq(l, 0, currentSnap.preampLinear)
+                        r = processSampleThroughEq(r, 1, currentSnap.preampLinear)
+                    }
+                    l = softLimit(l * leftBal)
+                    r = softLimit(r * rightBal)
+                    val absL = abs(l)
+                    val absR = abs(r)
+                    if (absL > maxAbs) maxAbs = absL
+                    if (absR > maxAbs) maxAbs = absR
+                    outBuffer.putFloat(l)
+                    outBuffer.putFloat(r)
+                } else {
+                    for (ch in 0 until channels) {
+                        var sample = inputBuffer.getFloat() * rgLinear
+                        if (currentSnap.enabled) {
+                            sample = processSampleThroughEq(sample, ch, currentSnap.preampLinear)
+                        }
+                        if (channels == 2) {
+                            sample *= if (ch == 0) leftBal else rightBal
+                        }
+                        sample = softLimit(sample)
+                        val absVal = abs(sample)
+                        if (absVal > maxAbs) maxAbs = absVal
+                        outBuffer.putFloat(sample)
+                    }
                 }
-
-                val absVal = abs(sample)
-                if (absVal > maxAbs) maxAbs = absVal
-
-                outBuffer.putFloat(sample)
-                ch++
-                if (ch >= channels) ch = 0
             }
         }
 
@@ -239,6 +323,12 @@ class TenBandEqualizerAudioProcessor : BaseAudioProcessor() {
             output[i] = s
         }
         return output
+    }
+
+    private fun softLimit(sample: Float): Float {
+        if (sample > 1f) return 1f
+        if (sample < -1f) return -1f
+        return sample
     }
 
     private fun processSampleThroughEq(input: Float, channel: Int, preampLinear: Float): Float {

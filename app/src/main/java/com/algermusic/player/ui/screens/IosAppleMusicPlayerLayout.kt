@@ -199,6 +199,10 @@ internal fun IosAppleMusicPlayerLayout(
     onOpenSleepTimer: () -> Unit,
     onOpenSongInfo: () -> Unit,
     onOpenPlayerStyleGallery: () -> Unit,
+    onOpenAddToPlaylist: (SongItem) -> Unit = {},
+    onOpenTagEditor: (SongItem) -> Unit = {},
+    onOpenDrivingMode: () -> Unit = {},
+    onOpenLyricSearch: (SongItem) -> Unit = {},
     onToggleTranslation: () -> Unit = {},
     lyricLayoutMode: com.algermusic.player.model.LyricLayoutMode = com.algermusic.player.model.LyricLayoutMode.NORMAL
 ) {
@@ -231,9 +235,15 @@ internal fun IosAppleMusicPlayerLayout(
             add(AlgerGlassMenuItem(label = "音质与音源", onClick = onOpenSourceAndQuality))
             add(AlgerGlassMenuItem(label = "播放器样式", onClick = onOpenPlayerStyleGallery))
             if (song != null) {
+                add(AlgerGlassMenuItem(label = "添加到自建歌单", onClick = { onOpenAddToPlaylist(song) }))
+                add(AlgerGlassMenuItem(label = "搜索 / 切换歌词", onClick = { onOpenLyricSearch(song) }))
                 add(AlgerGlassMenuItem(label = "歌曲信息", onClick = onOpenSongInfo))
+                if (song.isLocalSong && song.cueSheetPath == null) {
+                    add(AlgerGlassMenuItem(label = "编辑音频标签", onClick = { onOpenTagEditor(song) }))
+                }
             }
-            add(AlgerGlassMenuItem(label = "均衡器音效", onClick = onOpenEqualizer))
+            add(AlgerGlassMenuItem(label = "均衡器与音效", onClick = onOpenEqualizer))
+            add(AlgerGlassMenuItem(label = "驾驶模式", onClick = onOpenDrivingMode))
             if (song != null && song.numericId > 0L) {
                 add(AlgerGlassMenuItem(label = "歌曲评论", onClick = { onOpenComments(song) }))
             }

@@ -254,7 +254,11 @@ data class SongItem(
     val nasServerId: String? = null,
     val nasFilePath: String? = null,
     val nasLyricPath: String? = null,
-    val nasVirtualPath: String? = null
+    val nasVirtualPath: String? = null,
+    val replayGainDb: Float? = null,
+    val clipStartMs: Long = 0L,
+    val clipEndMs: Long? = null,
+    val cueSheetPath: String? = null
 ) {
     val numericId: Long get() = id.toLongOrNull() ?: 0L
 
@@ -513,4 +517,21 @@ data class LxScriptItem(
 ) {
     val displayMeta: String
         get() = "v$version" + if (author.isNotBlank()) " · $author" else ""
+}
+
+@Immutable
+@Serializable
+data class CustomPlaylist(
+    val id: String = "cpl_${java.util.UUID.randomUUID().toString().replace("-", "").take(12)}",
+    val name: String = "",
+    val description: String = "",
+    val coverUrl: String = "",
+    val songs: List<SongItem> = emptyList(),
+    val createdAtMs: Long = System.currentTimeMillis(),
+    val updatedAtMs: Long = System.currentTimeMillis()
+) {
+    val effectiveCoverUrl: String
+        get() = ImageUriHelper.normalize(coverUrl).ifBlank {
+            songs.firstOrNull { it.safePicUrl.isNotBlank() }?.safePicUrl.orEmpty()
+        }
 }

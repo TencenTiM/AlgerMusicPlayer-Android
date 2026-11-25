@@ -22,27 +22,61 @@ import java.io.File
  */
 @OptIn(UnstableApi::class)
 object AudioStreamCache {
-    private const val MAX_BYTES = 300L * 1024 * 1024
+    private const val DEFAULT_MAX_MB = 500
     private const val TAG = "AudioStreamCache"
 
     @Volatile
     private var cache: SimpleCache? = null
+
+    @Volatile
+    private var configuredMaxMb: Int = DEFAULT_MAX_MB
 
     /** 带 UA/Referer 拦截器的上游数据源（由 PlaybackService 注入） */
     @Volatile
     var upstreamFactory: DataSource.Factory? = null
 
     @Synchronized
-    fun get(context: Context): SimpleCache {
+    fun get(context: Context, maxMb: Int = configuredMaxMb): SimpleCache {
+        val safeMb = maxMb.coerceIn(100, 10240)
         cache?.let { return it }
+        configuredMaxMb = safeMb
         val dir = File(context.applicationContext.cacheDir, "audio_stream_cache")
         val created = SimpleCache(
             dir,
-            LeastRecentlyUsedCacheEvictor(MAX_BYTES),
+            LeastRecentlyUsedCacheEvictor(safeMb.toLong() * 1024L * 1024L),
             StandaloneDatabaseProvider(context.applicationContext)
         )
         cache = created
         return created
+    }
+
+    fun updateConfiguredMaxMb(maxMb: Int) {
+        configuredMaxMb = maxMb.coerceIn(100, 10240)
+    }
+
+    fun getStreamCacheSizeBytes(context: Context): Long {
+        val streamDir = File(context.applicationContext.cacheDir, "audio_stream_cache")
+        val stagingDir = File(context.applicationContext.cacheDir, "nas_play_staging")
+        return dirSizeBytes(streamDir) + dirSizeBytes(stagingDir)
+    }
+
+    @Synchronized
+    fun clearStreamCache(context: Context): Long {
+        val before = getStreamCacheSizeBytes(context)
+        runCatching {
+            cache?.keys?.toList()?.forEach { key ->
+                runCatching { cache?.removeResource(key) }
+            }
+        }
+        val stagingDir = File(context.applicationContext.cacheDir, "nas_play_staging")
+        stagingDir.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+        return before
+    }
+
+    fun dirSizeBytes(dir: File?): Long {
+        if (dir == null || !dir.exists()) return 0L
+        if (dir.isFile) return dir.length()
+        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
     fun buildCacheFactory(
@@ -51,8 +85,9 @@ object AudioStreamCache {
         settingsProvider: (() -> com.algermusic.player.model.AppSettings)? = null
     ): DataSource.Factory {
         upstreamFactory = upstream
+        val initMaxMb = settingsProvider?.invoke()?.audioCacheMaxMb ?: DEFAULT_MAX_MB
         val cacheFactory = CacheDataSource.Factory()
-            .setCache(get(context))
+            .setCache(get(context, initMaxMb))
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         // 仅 http(s) 走磁盘缓存；NAS 在「不缓存 + 流式播放」模式下直接走上游无痕流式读取

@@ -25,6 +25,7 @@ import com.algermusic.player.model.BilibiliPageItem
 import com.algermusic.player.model.BilibiliVideoItem
 import com.algermusic.player.model.CommentItem
 import com.algermusic.player.model.CompletedDownloadItem
+import com.algermusic.player.model.CustomPlaylist
 import com.algermusic.player.model.DownloadTaskItem
 import com.algermusic.player.model.LocalFolderNode
 import com.algermusic.player.model.LxScriptItem
@@ -2991,6 +2992,354 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _appUpdate.update { it.copy(errorMessage = "调起系统安装器失败：${e.message}") }
                 false
             }
+        }
+    }
+
+    // ==================== 10 项实用扩展能力（听感 / 歌单 / 标签 / 备份 / 去重 / 换词 / 缓存） ====================
+
+    val customPlaylistsFlow: StateFlow<List<CustomPlaylist>>
+        get() = container.settingsRepository.customPlaylistsFlow
+
+    val customLyricOverridesFlow: StateFlow<Map<String, String>>
+        get() = container.settingsRepository.customLyricOverridesFlow
+
+    data class StorageCacheStats(
+        val streamCacheBytes: Long = 0L,
+        val coverCacheBytes: Long = 0L,
+        val lyricCacheBytes: Long = 0L
+    ) {
+        val totalBytes: Long get() = streamCacheBytes + coverCacheBytes + lyricCacheBytes
+    }
+
+    private val _storageCacheStats = MutableStateFlow(StorageCacheStats())
+    val storageCacheStatsFlow: StateFlow<StorageCacheStats> = _storageCacheStats.asStateFlow()
+
+    fun refreshStorageCacheStats() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val streamBytes = com.algermusic.player.player.AudioStreamCache.getStreamCacheSizeBytes(app)
+            val coverDir = container.settingsRepository.coverCacheDir
+            val coilDir = java.io.File(app.cacheDir, "image_cache")
+            val coverBytes = com.algermusic.player.player.AudioStreamCache.dirSizeBytes(coverDir) +
+                com.algermusic.player.player.AudioStreamCache.dirSizeBytes(coilDir)
+            val lyricBytes = com.algermusic.player.player.AudioStreamCache.dirSizeBytes(container.settingsRepository.lyricCacheDir)
+            _storageCacheStats.value = StorageCacheStats(
+                streamCacheBytes = streamBytes,
+                coverCacheBytes = coverBytes,
+                lyricCacheBytes = lyricBytes
+            )
+        }
+    }
+
+    fun clearStreamCache(onDone: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val freed = withContext(Dispatchers.IO) {
+                com.algermusic.player.player.AudioStreamCache.clearStreamCache(app)
+            }
+            refreshStorageCacheStats()
+            onDone("已清理音频流缓存 ${MusicQualityLevel.formatFileSizeShort(freed).ifBlank { "0 KB" }}")
+        }
+    }
+
+    fun clearCoverCache(onDone: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val freed = withContext(Dispatchers.IO) {
+                val coverDir = container.settingsRepository.coverCacheDir
+                val coilDir = java.io.File(app.cacheDir, "image_cache")
+                val before = com.algermusic.player.player.AudioStreamCache.dirSizeBytes(coverDir) +
+                    com.algermusic.player.player.AudioStreamCache.dirSizeBytes(coilDir)
+                coverDir.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+                coilDir.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+                before
+            }
+            refreshStorageCacheStats()
+            onDone("已清理封面缓存 ${MusicQualityLevel.formatFileSizeShort(freed).ifBlank { "0 KB" }}")
+        }
+    }
+
+    fun clearLyricCache(onDone: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val freed = withContext(Dispatchers.IO) {
+                val dir = container.settingsRepository.lyricCacheDir
+                val before = com.algermusic.player.player.AudioStreamCache.dirSizeBytes(dir)
+                dir.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+                before
+            }
+            refreshStorageCacheStats()
+            onDone("已清理歌词缓存 ${MusicQualityLevel.formatFileSizeShort(freed).ifBlank { "0 KB" }}")
+        }
+    }
+
+    fun setAudioCacheMaxMb(maxMb: Int) {
+        val safe = maxMb.coerceIn(100, 5120)
+        com.algermusic.player.player.AudioStreamCache.updateConfiguredMaxMb(safe)
+        container.settingsRepository.updateSettings { it.copy(audioCacheMaxMb = safe) }
+    }
+
+    fun setCrossfadeDurationSec(sec: Int) {
+        container.settingsRepository.updateSettings { it.copy(crossfadeDurationSec = sec.coerceIn(0, 8)) }
+    }
+
+    fun setSkipSilenceEnabled(enabled: Boolean) {
+        container.settingsRepository.updateSettings { it.copy(skipSilenceEnabled = enabled) }
+    }
+
+    fun setAutoPlayOnBluetoothConnect(enabled: Boolean) {
+        container.settingsRepository.updateSettings { it.copy(autoPlayOnBluetoothConnect = enabled) }
+    }
+
+    fun updateAudioEnhancements(
+        replayGainEnabled: Boolean? = null,
+        replayGainPreampDb: Float? = null,
+        monoAudioEnabled: Boolean? = null,
+        channelBalance: Float? = null
+    ) {
+        playerController.updateAudioEnhancements(
+            replayGainEnabled = replayGainEnabled,
+            replayGainPreampDb = replayGainPreampDb,
+            monoAudioEnabled = monoAudioEnabled,
+            channelBalance = channelBalance
+        )
+    }
+
+    // ---- 本地自建跨源混合歌单 + M3U8 导入导出 ----
+
+    fun createCustomPlaylist(name: String, initialSongs: List<SongItem> = emptyList()): CustomPlaylist {
+        return container.settingsRepository.createCustomPlaylist(name = name, initialSongs = initialSongs)
+    }
+
+    fun renameCustomPlaylist(playlistId: String, newName: String) {
+        container.settingsRepository.renameCustomPlaylist(playlistId, newName)
+    }
+
+    fun deleteCustomPlaylist(playlistId: String) {
+        container.settingsRepository.deleteCustomPlaylist(playlistId)
+    }
+
+    fun addSongToCustomPlaylist(playlistId: String, song: SongItem): Boolean {
+        return container.settingsRepository.addSongToCustomPlaylist(playlistId, song)
+    }
+
+    fun removeSongFromCustomPlaylist(playlistId: String, songId: String) {
+        container.settingsRepository.removeSongFromCustomPlaylist(playlistId, songId)
+    }
+
+    fun exportCustomPlaylistToM3u8Uri(playlist: CustomPlaylist, targetUri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val content = com.algermusic.player.data.local.M3uPlaylistCodec.exportToM3u8(playlist.name, playlist.songs)
+                    app.contentResolver.openOutputStream(targetUri)?.use { out ->
+                        out.write(content.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("无法打开目标文件写入流")
+                }
+            }
+            onResult(res.fold(onSuccess = { "已导出 M3U8 歌单（${playlist.songs.size} 首）" }, onFailure = { "导出失败: ${it.message}" }))
+        }
+    }
+
+    fun importM3u8FromUri(uri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val raw = app.contentResolver.openInputStream(uri)?.use { stream ->
+                        com.algermusic.player.data.local.CueSheetParser.decodeCueBytes(stream.readBytes())
+                    } ?: throw IllegalStateException("无法读取 M3U 文件")
+                    val known = buildList {
+                        addAll(_local.value.allSongs)
+                        addAll(_nasLibrary.value.allSongs)
+                        addAll(container.settingsRepository.favoritesFlow.value)
+                    }
+                    val parsed = com.algermusic.player.data.local.M3uPlaylistCodec.parseM3u8(raw, known)
+                    if (parsed.songs.isEmpty()) throw IllegalStateException("未在 M3U 文件中解析到有效曲目")
+                    val name = parsed.playlistName ?: Uri.decode(uri.lastPathSegment.orEmpty())
+                        .substringAfterLast('/')
+                        .substringBeforeLast('.')
+                        .ifBlank { "导入歌单" }
+                    container.settingsRepository.createCustomPlaylist(name = name, initialSongs = parsed.songs)
+                }
+            }
+            onResult(res.fold(onSuccess = { "已导入歌单「${it.name}」（${it.songs.size} 首）" }, onFailure = { "导入失败: ${it.message}" }))
+        }
+    }
+
+    // ---- 歌词页手动搜索切换 / 绑定本地 .lrc ----
+
+    suspend fun searchLyricCandidates(keyword: String): List<SongItem> =
+        container.lyricService.searchLyricCandidates(keyword)
+
+    fun applyOnlineLyricCandidate(targetSong: SongItem, candidate: SongItem, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val bundle = container.lyricService.fetchRawLyricBundleForCandidate(candidate)
+            if (bundle == null) {
+                onResult("该候选曲目暂无可用歌词")
+                return@launch
+            }
+            container.settingsRepository.setCustomLyricOverride(targetSong.id, bundle.first)
+            playerController.reloadCurrentLyric()
+            onResult("已切换为《${candidate.name}》的歌词")
+        }
+    }
+
+    fun applyLocalLyricUri(targetSong: SongItem, uri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val text = container.lyricService.readLyricTextFromUri(uri)
+            if (text.isNullOrBlank()) {
+                onResult("读取本地歌词文件失败或内容为空")
+                return@launch
+            }
+            container.settingsRepository.setCustomLyricOverride(targetSong.id, text)
+            playerController.reloadCurrentLyric()
+            onResult("已绑定本地歌词文件")
+        }
+    }
+
+    fun clearManualLyricOverride(targetSong: SongItem, onResult: (String) -> Unit) {
+        container.settingsRepository.clearCustomLyricOverride(targetSong.id)
+        playerController.reloadCurrentLyric()
+        onResult("已恢复自动匹配歌词")
+    }
+
+    // ---- 本地歌曲标签编辑与在线刮削 ----
+
+    suspend fun searchOnlineTagCandidates(keyword: String): List<SongItem> = withContext(Dispatchers.IO) {
+        val kw = keyword.trim()
+        if (kw.isBlank()) return@withContext emptyList()
+        runCatching { container.apiClient.searchSongs(kw, limit = 10) }.getOrDefault(emptyList())
+    }
+
+    fun saveLocalSongTags(
+        song: SongItem,
+        newTitle: String,
+        newArtist: String,
+        newAlbum: String,
+        newLyric: String?,
+        coverUrlToFetch: String?,
+        onResult: (Result<SongItem>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val coverBytes = if (!coverUrlToFetch.isNullOrBlank() && coverUrlToFetch.startsWith("http", true)) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val req = Request.Builder().url(coverUrlToFetch).get().build()
+                        container.okHttpClient.newCall(req).execute().use { r ->
+                            if (r.isSuccessful) r.body?.bytes() else null
+                        }
+                    }.getOrNull()
+                }
+            } else null
+
+            val result = container.localScanner.updateLocalSongTags(
+                song = song,
+                newTitle = newTitle,
+                newArtist = newArtist,
+                newAlbum = newAlbum,
+                newLyric = newLyric,
+                newCoverBytes = coverBytes
+            )
+            result.onSuccess { updated ->
+                rawLocalSongsCache = rawLocalSongsCache.map { if (it.id == updated.id) updated else it }
+                withContext(Dispatchers.IO) {
+                    container.settingsRepository.saveCachedLocalSongs(rawLocalSongsCache)
+                }
+                publishLocalSongs(rawLocalSongsCache)
+                playerController.updateSongInQueueAndCurrent(updated)
+            }
+            onResult(result)
+        }
+    }
+
+    // ---- 本地/NAS 重复歌曲检测与清理 ----
+
+    fun detectDuplicateSongs(includeNas: Boolean): List<com.algermusic.player.data.local.DuplicateSongGroup> {
+        val pool = if (includeNas) _nasLibrary.value.allSongs else _local.value.allSongs
+        return com.algermusic.player.data.local.DuplicateSongDetector.findDuplicateGroups(pool)
+    }
+
+    fun deleteLocalDuplicateSong(song: SongItem, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = container.localScanner.deleteLocalSongFile(song)
+            if (ok) {
+                rawLocalSongsCache = rawLocalSongsCache.filterNot { it.id == song.id }
+                withContext(Dispatchers.IO) {
+                    container.settingsRepository.saveCachedLocalSongs(rawLocalSongsCache)
+                }
+                publishLocalSongs(rawLocalSongsCache)
+            }
+            onDone(ok)
+        }
+    }
+
+    // ---- 配置与歌单完整备份 / 恢复（本地 JSON + NAS WebDAV） ----
+
+    fun hasWebDavBackupServer(): Boolean =
+        container.backupRestoreService.findWebDavBackupServer() != null
+
+    fun exportBackupToUri(targetUri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val json = container.backupRestoreService.exportToJson()
+                    app.contentResolver.openOutputStream(targetUri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                    } ?: throw IllegalStateException("无法写入备份文件")
+                }
+            }
+            onResult(res.fold(onSuccess = { "配置与歌单备份已导出" }, onFailure = { "备份导出失败: ${it.message}" }))
+        }
+    }
+
+    fun importBackupFromUri(sourceUri: Uri, onResult: (String) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val raw = app.contentResolver.openInputStream(sourceUri)?.use { stream ->
+                        stream.readBytes().toString(Charsets.UTF_8)
+                    } ?: throw IllegalStateException("无法读取备份文件")
+                    container.backupRestoreService.importFromJson(raw).getOrThrow()
+                }
+            }
+            onResult(res.fold(
+                onSuccess = { s ->
+                    container.nasMusicService.registerAllSavedServersAuth()
+                    playerController.applyCurrentAudioEnhancements()
+                    "已恢复：${s.favoritesCount} 首喜欢、${s.customPlaylistsCount} 个歌单、${s.nasServersCount} 台 NAS"
+                },
+                onFailure = { "备份恢复失败: ${it.message}" }
+            ))
+        }
+    }
+
+    fun uploadBackupToWebDav(onResult: (String) -> Unit) {
+        val srv = container.backupRestoreService.findWebDavBackupServer()
+        if (srv == null) {
+            onResult("请先在 NAS 管理中配置一台 WebDAV 服务器")
+            return
+        }
+        viewModelScope.launch {
+            val res = container.backupRestoreService.uploadBackupToWebDav(srv)
+            onResult(res.fold(
+                onSuccess = { "已云同步备份到 WebDAV (${srv.name})" },
+                onFailure = { it.message ?: "WebDAV 备份上传失败" }
+            ))
+        }
+    }
+
+    fun restoreBackupFromWebDav(onResult: (String) -> Unit) {
+        val srv = container.backupRestoreService.findWebDavBackupServer()
+        if (srv == null) {
+            onResult("请先在 NAS 管理中配置一台 WebDAV 服务器")
+            return
+        }
+        viewModelScope.launch {
+            val res = container.backupRestoreService.restoreBackupFromWebDav(srv)
+            onResult(res.fold(
+                onSuccess = { s ->
+                    container.nasMusicService.registerAllSavedServersAuth()
+                    playerController.applyCurrentAudioEnhancements()
+                    "已从 WebDAV 恢复：${s.favoritesCount} 首喜欢、${s.customPlaylistsCount} 个歌单"
+                },
+                onFailure = { it.message ?: "WebDAV 备份恢复失败" }
+            ))
         }
     }
 }

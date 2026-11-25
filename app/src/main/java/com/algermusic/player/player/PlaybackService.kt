@@ -1,8 +1,12 @@
 package com.algermusic.player.player
 
 import android.app.PendingIntent
+import android.bluetooth.BluetoothA2dp
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -33,9 +37,10 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import coil3.SingletonImageLoader
@@ -111,10 +116,19 @@ fun buildMediaNotificationButtons(
 }
 
 @OptIn(UnstableApi::class)
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
 
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibrarySession? = null
+    private var bluetoothReceiver: BroadcastReceiver? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    companion object {
+        private const val LIB_ROOT_ID = "alger_root"
+        private const val LIB_CAT_FAVORITES = "cat_favorites"
+        private const val LIB_CAT_RECENT = "cat_recent"
+        private const val LIB_CAT_LOCAL = "cat_local"
+        private const val LIB_CAT_PLAYLISTS = "cat_playlists"
+    }
 
     private class QueueAwareForwardingPlayer(
         player: Player,
@@ -359,6 +373,7 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
+        exoPlayer.skipSilenceEnabled = settingsRepo.currentSettings.skipSilenceEnabled
 
         val fallbackCoverUri = Uri.parse("android.resource://$packageName/${R.drawable.ic_alger_logo}")
         val forwardingPlayer = QueueAwareForwardingPlayer(exoPlayer, playerController, fallbackCoverUri)
@@ -520,12 +535,142 @@ class PlaybackService : MediaSessionService() {
         val initialLiked = initialUi.currentSong?.let { settingsRepo.isFavorite(it.id) } == true
         val initialButtons = buildMediaNotificationButtons(initialLiked, initialUi.playMode)
 
-        val sessionCallback = object : MediaSession.Callback {
+        val sessionCallback = object : MediaLibrarySession.Callback {
+            private fun buildBrowsableNode(id: String, title: String, subtitle: String? = null): MediaItem {
+                val meta = MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setSubtitle(subtitle)
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                    .build()
+                return MediaItem.Builder()
+                    .setMediaId(id)
+                    .setMediaMetadata(meta)
+                    .build()
+            }
+
+            private fun buildPlayableBrowseSong(mediaId: String, song: com.algermusic.player.model.SongItem): MediaItem {
+                val artUri = song.highResCoverUrl.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                val meta = MediaMetadata.Builder()
+                    .setTitle(song.name)
+                    .setArtist(song.artistText)
+                    .setAlbumTitle(song.albumText)
+                    .setArtworkUri(artUri)
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                    .build()
+                return MediaItem.Builder()
+                    .setMediaId(mediaId)
+                    .setMediaMetadata(meta)
+                    .build()
+            }
+
+            override fun onGetLibraryRoot(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                params: LibraryParams?
+            ): ListenableFuture<LibraryResult<MediaItem>> {
+                val root = buildBrowsableNode(LIB_ROOT_ID, "Alger Music")
+                return Futures.immediateFuture(LibraryResult.ofItem(root, params))
+            }
+
+            override fun onGetChildren(
+                session: MediaLibrarySession,
+                browser: MediaSession.ControllerInfo,
+                parentId: String,
+                page: Int,
+                pageSize: Int,
+                params: LibraryParams?
+            ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+                val future = SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+                serviceScope.launch(Dispatchers.IO) {
+                    val items: List<MediaItem> = when {
+                        parentId == LIB_ROOT_ID -> listOf(
+                            buildBrowsableNode(LIB_CAT_FAVORITES, "我喜欢的音乐", "${settingsRepo.favoritesFlow.value.size} 首"),
+                            buildBrowsableNode(LIB_CAT_RECENT, "最近播放", "${settingsRepo.recentHistoryFlow.value.size} 首"),
+                            buildBrowsableNode(LIB_CAT_LOCAL, "本地音乐"),
+                            buildBrowsableNode(LIB_CAT_PLAYLISTS, "自建歌单", "${settingsRepo.customPlaylistsFlow.value.size} 个")
+                        )
+                        parentId == LIB_CAT_FAVORITES -> settingsRepo.favoritesFlow.value.map {
+                            buildPlayableBrowseSong("lib_fav:${it.id}", it)
+                        }
+                        parentId == LIB_CAT_RECENT -> settingsRepo.recentHistoryFlow.value.map {
+                            buildPlayableBrowseSong("lib_recent:${it.id}", it)
+                        }
+                        parentId == LIB_CAT_LOCAL -> settingsRepo.loadCachedLocalSongs().take(200).map {
+                            buildPlayableBrowseSong("lib_local:${it.id}", it)
+                        }
+                        parentId == LIB_CAT_PLAYLISTS -> settingsRepo.customPlaylistsFlow.value.map { pl ->
+                            buildBrowsableNode("cpl:${pl.id}", pl.name, "${pl.songs.size} 首")
+                        }
+                        parentId.startsWith("cpl:") -> {
+                            val plId = parentId.removePrefix("cpl:")
+                            settingsRepo.customPlaylistsFlow.value.firstOrNull { it.id == plId }
+                                ?.songs
+                                ?.map { buildPlayableBrowseSong("lib_cpl:$plId:${it.id}", it) }
+                                .orEmpty()
+                        }
+                        else -> emptyList()
+                    }
+                    val safePageSize = pageSize.coerceAtLeast(1)
+                    val fromIdx = (page * safePageSize).coerceAtMost(items.size)
+                    val toIdx = (fromIdx + safePageSize).coerceAtMost(items.size)
+                    future.set(LibraryResult.ofItemList(ImmutableList.copyOf(items.subList(fromIdx, toIdx)), params))
+                }
+                return future
+            }
+
+            override fun onAddMediaItems(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo,
+                mediaItems: MutableList<MediaItem>
+            ): ListenableFuture<MutableList<MediaItem>> {
+                val firstId = mediaItems.firstOrNull()?.mediaId.orEmpty()
+                if (firstId.startsWith("lib_")) {
+                    serviceScope.launch(Dispatchers.IO) {
+                        val (targetSong, targetQueue) = when {
+                            firstId.startsWith("lib_fav:") -> {
+                                val sid = firstId.removePrefix("lib_fav:")
+                                val q = settingsRepo.favoritesFlow.value
+                                q.firstOrNull { it.id == sid } to q
+                            }
+                            firstId.startsWith("lib_recent:") -> {
+                                val sid = firstId.removePrefix("lib_recent:")
+                                val q = settingsRepo.recentHistoryFlow.value
+                                q.firstOrNull { it.id == sid } to q
+                            }
+                            firstId.startsWith("lib_local:") -> {
+                                val sid = firstId.removePrefix("lib_local:")
+                                val q = settingsRepo.loadCachedLocalSongs()
+                                q.firstOrNull { it.id == sid } to q
+                            }
+                            firstId.startsWith("lib_cpl:") -> {
+                                val rest = firstId.removePrefix("lib_cpl:")
+                                val plId = rest.substringBefore(':')
+                                val sid = rest.substringAfter(':', "")
+                                val q = settingsRepo.customPlaylistsFlow.value.firstOrNull { it.id == plId }?.songs.orEmpty()
+                                q.firstOrNull { it.id == sid } to q
+                            }
+                            else -> null to emptyList()
+                        }
+                        if (targetSong != null) {
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                playerController.playSong(targetSong, targetQueue.ifEmpty { listOf(targetSong) })
+                            }
+                        }
+                    }
+                    return Futures.immediateFuture(mutableListOf())
+                }
+                return super.onAddMediaItems(mediaSession, controller, mediaItems)
+            }
+
             override fun onConnect(
                 session: MediaSession,
                 controller: MediaSession.ControllerInfo
             ): MediaSession.ConnectionResult {
-                val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                     .buildUpon()
                     .add(SessionCommand(MEDIA_ACTION_TOGGLE_FAVORITE, Bundle.EMPTY))
                     .add(SessionCommand(MEDIA_ACTION_CYCLE_PLAY_MODE, Bundle.EMPTY))
@@ -560,12 +705,44 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        mediaSession = MediaSession.Builder(this, forwardingPlayer)
+        mediaSession = MediaLibrarySession.Builder(this, forwardingPlayer, sessionCallback)
             .setSessionActivity(sessionActivityPendingIntent)
-            .setCallback(sessionCallback)
             .setMediaButtonPreferences(initialButtons)
             .setBitmapLoader(sessionBitmapLoader)
             .build()
+
+        // 实时同步跳过静音开关
+        serviceScope.launch {
+            settingsRepo.settingsFlow
+                .map { it.skipSilenceEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    exoPlayer.skipSilenceEnabled = enabled
+                }
+        }
+
+        // 蓝牙 A2DP 耳机/车机连接自动续播（受设置开关控制）
+        runCatching {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action != BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) return
+                    val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
+                    if (state == BluetoothProfile.STATE_CONNECTED &&
+                        settingsRepo.currentSettings.autoPlayOnBluetoothConnect &&
+                        !playerController.uiState.value.isPlaying
+                    ) {
+                        playerController.togglePlayPause()
+                    }
+                }
+            }
+            ContextCompat.registerReceiver(
+                this,
+                receiver,
+                IntentFilter(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            bluetoothReceiver = receiver
+        }
 
         serviceScope.launch {
             combine(playerController.uiState, settingsRepo.favoritesFlow) { ui, favs ->
@@ -619,7 +796,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
@@ -629,6 +806,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        bluetoothReceiver?.let { r -> runCatching { unregisterReceiver(r) } }
+        bluetoothReceiver = null
         serviceScope.cancel()
         mediaSession?.run {
             player.release()
